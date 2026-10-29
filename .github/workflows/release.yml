@@ -24,6 +24,15 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - name: Tag must match the crate version (ah update compares them)
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          crate="$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)"
+          if [ "$tag" != "$crate" ]; then
+            echo "tag v$tag does not match crate version $crate" >&2
+            exit 1
+          fi
       - run: rustup target add ${{ matrix.target }}
       - run: cargo build --release -p ah --target ${{ matrix.target }}
       - name: Package
