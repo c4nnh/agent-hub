@@ -20,6 +20,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 rmcp = { version = "3", features = ["server", "macros", "transport-io", "schemars"] }
 schemars = "1"
 gethostname = "1"
+tempfile = "3"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 
@@ -29,4 +30,3 @@ axum = "0.8"
 chrono = "0.4"
 rmcp = { version = "3", features = ["client"] }
 sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio", "migrate", "macros"] }
-tempfile = "3"

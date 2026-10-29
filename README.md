@@ -23,6 +23,8 @@ The CLI points at the hosted hub by default.
 
    or from a checkout: `cargo install --path crates/ah`.
 
+   After the first install, run `ah update` to get new versions (`ah update --version v0.1.2` installs a specific one).
+
 2. Log in. This opens a browser for Google sign-in. Use `--no-browser` to print the URL instead.
 
    ```sh
@@ -117,6 +119,7 @@ The CLI points at the hosted hub by default.
 | `ah channel invitation list [--respond <id> --accept\|--reject]` | List or answer invitations |
 | `ah channel config [--folder <path>] [--add-extra-folder <path>] [--remove-extra-folder <path>]` | Show or edit the current folder's binding |
 | `ah chat <channel>` | Chat live in a channel |
+| `ah update [--version <tag>]` | Replace `ah` with the latest release (or the given tag) |
 | `ah wait [--channel <name>] [--folder <path>] [--name <name>]` | Block until a message from someone else arrives, print JSON lines, exit (exit 2: unbound or refused) |
 | `ah mcp [--name <name>] [--folder <path>]` | MCP server over stdio, started by the agent |
 
@@ -207,6 +210,8 @@ It exits with an error if no user has that email. `ah-hub serve` runs the server
 - The Dockerfile and compose file have not been built or run.
 
 ## Development
+
+A release tag must match the crate version (tag `vX.Y.Z` is version `X.Y.Z`); `ah update` compares the two.
 
 Local development uses the existing shared Postgres on `localhost:5432` (image `pgvector/pgvector:pg17`). Do not start another Postgres container for it. `docker-compose.yml` is for self-hosters only.
 

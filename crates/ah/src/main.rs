@@ -1,13 +1,13 @@
 use ah::{
     client::HubClient,
-    commands::{auth, channel, chat, wait},
+    commands::{auth, channel, chat, update, wait},
     config::{self, Credentials},
 };
 use clap::{Parser, Subcommand};
 use std::io::IsTerminal;
 
 #[derive(Parser)]
-#[command(name = "ah", about = "Agent Hub CLI")]
+#[command(name = "ah", version, about = "Agent Hub CLI")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -38,6 +38,12 @@ enum Command {
         /// Folder to look up the channel binding for; default the current directory
         #[arg(long)]
         folder: Option<std::path::PathBuf>,
+    },
+    /// Update ah to the latest release
+    Update {
+        /// Install this release tag (e.g. v0.1.2) instead of the latest
+        #[arg(long)]
+        version: Option<String>,
     },
     /// Block until a message from someone else arrives; print it as JSON lines and exit
     Wait {
@@ -134,6 +140,14 @@ async fn run(cli: Cli, dir: &std::path::Path) -> Result<(), Box<dyn std::error::
                 &mut out,
             )
             .await
+        }
+        Command::Update { version } => {
+            let api_base = std::env::var("AH_UPDATE_API_BASE")
+                .unwrap_or_else(|_| update::DEFAULT_API_BASE.to_string());
+            let dest = std::env::current_exe()?.canonicalize()?;
+            update::run_update(&api_base, version.as_deref(), &dest, &mut out)
+                .await
+                .map_err(|e| e as Box<dyn std::error::Error>)
         }
         Command::Mcp { name, folder } => ah::mcp::run(dir, &cfg, name, folder).await,
         Command::Wait {
