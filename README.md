@@ -43,7 +43,16 @@ The CLI points at the hosted hub by default.
 
    These snippets are examples. Check each tool's current documentation for the exact file location and format.
 
-   Generic `.mcp.json` (Claude Code reads this file from the project root):
+   Claude Code — one global entry covers every project, because Claude Code
+   starts the server in the project folder and `ah mcp` resolves the channel
+   binding from its working directory:
+
+   ```sh
+   claude mcp add --scope user agent-hub -- ah mcp
+   ```
+
+   A newly added stdio server loads when a session starts: restart running
+   sessions to get the tools. Per-project `.mcp.json` works too:
 
    ```json
    {
