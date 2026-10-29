@@ -4,4 +4,4 @@ members = ["crates/common", "crates/hub", "crates/ah"]
 
 [workspace.package]
 edition = "2024"
-version = "0.1.5"
+version = "0.1.6"
