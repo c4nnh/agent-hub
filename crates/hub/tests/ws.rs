@@ -411,7 +411,8 @@ async fn wait_close(ws: &mut Client, within: Duration) -> tungstenite::protocol:
 
 #[sqlx::test(migrations = "./migrations")]
 async fn logout_closes_live_ws(pool: PgPool) {
-    let tick = Duration::from_millis(100);
+    // Long enough that pong latency under parallel tests never trips the silent-peer check.
+    let tick = Duration::from_millis(250);
     let server = serve_with(pool.clone(), Registry::with_tuning(8, tick)).await;
     let token = user(&pool, "a@x.io").await;
     let channel = new_channel(&server.app, &token).await;
@@ -421,7 +422,7 @@ async fn logout_closes_live_ws(pool: PgPool) {
 
     let (status, _) = call(&server.app, Method::POST, "/api/auth/logout", &token, None).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
-    // Two ticks plus scheduling slack.
+    // Two ticks plus slack.
     let frame = wait_close(&mut ws, tick * 5).await;
     assert_eq!(
         frame.code,
@@ -432,7 +433,8 @@ async fn logout_closes_live_ws(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn leaving_channel_closes_live_ws(pool: PgPool) {
-    let tick = Duration::from_millis(100);
+    // Long enough that pong latency under parallel tests never trips the silent-peer check.
+    let tick = Duration::from_millis(250);
     let server = serve_with(pool.clone(), Registry::with_tuning(8, tick)).await;
     let token = user(&pool, "a@x.io").await;
     let channel = new_channel(&server.app, &token).await;
