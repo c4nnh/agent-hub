@@ -188,6 +188,8 @@ ah daemon                                # run in the foreground; Ctrl-C stops i
 
 The daemon spawns the command only when all of these hold: someone else posted a message past the folder's cursor, no `ah wait` is running for the folder, the previous child it started has exited, it has not already woken for that message, and the last spawn was at least 30 seconds ago. The daemon never moves the cursor; the woken agent does that when it reads the messages. An agent that exits without reading them is not started again until a newer message arrives. Child output goes to the daemon's terminal. The daemon re-reads `bindings.json` every 60 seconds, so folders can be added or removed while it runs.
 
+Before it spawns, the daemon asks the hub whether an agent of this folder is connected (for example an MCP session) and skips the wake if so. An interactive session that listens only through a background `ah wait`, with no MCP connection, is invisible to that check: while it is processing a message, a wake can still start a second agent in the same folder. The last-woken-message guard and the cooldown bound this.
+
 `ah daemon` does not install itself as a service. Run it under launchd, systemd, tmux or whatever you prefer.
 
 ## Self-hosting

@@ -127,6 +127,11 @@ impl Watch {
         }
     }
 
+    #[doc(hidden)]
+    pub fn has_child(&self) -> bool {
+        self.child.is_some()
+    }
+
     fn reap(&mut self) {
         let Some(child) = &mut self.child else {
             return;
@@ -141,6 +146,14 @@ impl Watch {
     /// spawn the wake command when `should_wake` allows it.
     pub async fn pass(&mut self) -> Result<(), Error> {
         self.reap();
+        // Order matters: `ah wait` advances the cursor before it drops its pidfile. Checking
+        // liveness first and reading the cursor after means a dead listener's delivery is
+        // already visible in the cursor.
+        let alive = listener_alive(&self.dir, &self.folder);
+        let running = self.child.is_some();
+        if alive || running {
+            return Ok(());
+        }
         let cursors = Cursors::load_folder(&self.dir, &self.folder)?;
         let mut newest: Option<(i64, String)> = None;
         for ch in &self.channels {
@@ -155,19 +168,44 @@ impl Watch {
             }
         }
         let (max_foreign_id, channel) = newest.unwrap_or((0, String::new()));
-        let alive = listener_alive(&self.dir, &self.folder);
-        let running = self.child.is_some();
         let since_spawn = self.last_spawn.map_or(Duration::MAX, |t| t.elapsed());
-        if should_wake(
+        let allowed = should_wake(
             alive,
             running,
             max_foreign_id,
             self.last_woken_id,
             since_spawn,
-        ) {
-            self.spawn(max_foreign_id, &channel);
+        );
+        if !allowed {
+            return Ok(());
         }
+        let has_session = self.own_agent_online().await;
+        if has_session {
+            return Ok(());
+        }
+        self.spawn(max_foreign_id, &channel);
         Ok(())
+    }
+
+    /// True when one of this folder's own agent names is connected to a bound channel, i.e. an
+    /// interactive session is working and must not get a headless twin. A failed lookup counts
+    /// as offline: waking is preferred over staying silent.
+    async fn own_agent_online(&self) -> bool {
+        for ch in &self.channels {
+            let listed = self.client.list_agents(ch.id).await;
+            match listed {
+                Ok(agents) => {
+                    if agents.iter().any(|a| self.own_names.contains(&a.name)) {
+                        return true;
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(%error, folder = %self.folder, "could not check online agents, waking anyway");
+                    return false;
+                }
+            }
+        }
+        false
     }
 
     fn spawn(&mut self, message_id: i64, channel: &str) {
@@ -265,14 +303,17 @@ impl Watch {
     }
 }
 
-/// Folders with a wake command and at least one bound channel, mapped to their command.
-fn wake_folders(dir: &Path) -> std::io::Result<HashMap<String, String>> {
+/// A watcher is restarted when either part changes.
+type WakeConfig = (String, Vec<uuid::Uuid>);
+
+/// Folders with a wake command and at least one bound channel, mapped to command and channels.
+fn wake_folders(dir: &Path) -> std::io::Result<HashMap<String, WakeConfig>> {
     let bindings = Bindings::load(dir)?;
     Ok(bindings
         .0
         .into_iter()
         .filter(|(_, b)| !b.channel_ids.is_empty())
-        .filter_map(|(folder, b)| Some((folder, b.wake_command?)))
+        .filter_map(|(folder, b)| Some((folder, (b.wake_command?, b.channel_ids))))
         .collect())
 }
 
@@ -300,7 +341,7 @@ async fn watch_folder(
 
 /// Runs until ctrl-c. Re-reads bindings.json every `REFRESH` and starts, restarts or stops
 /// watchers to match.
-/// ponytail: a changed wake command restarts the watcher, so the old child handle is dropped and
+/// ponytail: a changed wake command or channel list restarts the watcher, so the old child handle is dropped and
 /// a still-running agent is not tracked; a live `ah wait` pidfile still prevents a double wake.
 pub async fn run_daemon(dir: &Path, client: HubClient) -> Result<(), Error> {
     let _ = tracing_subscriber::fmt()
@@ -315,17 +356,18 @@ pub async fn run_daemon(dir: &Path, client: HubClient) -> Result<(), Error> {
         return Ok(());
     }
     let client = Arc::new(client);
-    let mut tasks: HashMap<String, (String, tokio::task::JoinHandle<()>)> = HashMap::new();
+    let mut tasks: HashMap<String, (WakeConfig, tokio::task::JoinHandle<()>)> = HashMap::new();
     let mut wanted = first;
     loop {
-        tasks.retain(|folder, (command, handle)| {
-            let keep = wanted.get(folder) == Some(command) && !handle.is_finished();
+        tasks.retain(|folder, (config, handle)| {
+            let keep = wanted.get(folder) == Some(config) && !handle.is_finished();
             if !keep {
                 handle.abort();
             }
             keep
         });
-        for (folder, command) in &wanted {
+        for (folder, config) in &wanted {
+            let command = &config.0;
             if tasks.contains_key(folder) {
                 continue;
             }
@@ -333,11 +375,12 @@ pub async fn run_daemon(dir: &Path, client: HubClient) -> Result<(), Error> {
             let (client, dir) = (client.clone(), dir.to_path_buf());
             let (f, c) = (folder.clone(), command.clone());
             let handle = tokio::spawn(async move {
-                if let Err(error) = watch_folder(client, dir, f.clone(), c).await {
+                let stopped = watch_folder(client, dir, f.clone(), c).await;
+                if let Err(error) = stopped {
                     tracing::error!(%error, folder = %f, "watcher stopped; retrying at the next refresh");
                 }
             });
-            tasks.insert(folder.clone(), (command.clone(), handle));
+            tasks.insert(folder.clone(), (config.clone(), handle));
         }
         tokio::select! {
             _ = tokio::signal::ctrl_c() => break,

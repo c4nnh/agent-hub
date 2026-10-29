@@ -150,7 +150,11 @@ async fn wakes_once_without_touching_the_cursor(pool: PgPool) {
 
     // The agent exited without advancing the cursor: no re-spawn until new traffic arrives,
     // even with the cooldown out of the way.
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Wait until the child is reaped so the child gate cannot be what blocks the second pass.
+    while e.watch.has_child() {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        e.watch.pass().await.unwrap();
+    }
     std::fs::remove_file(&e.out).unwrap();
     e.watch.last_spawn = None;
     e.watch.pass().await.unwrap();

@@ -340,6 +340,9 @@ pub fn run_wake(dir: &Path, cwd: &Path, args: WakeArgs, out: &mut impl Write) ->
         .0
         .get_mut(&key)
         .ok_or_else(|| format!("{key} is not bound to a channel; run `ah channel join` first"))?;
+    if args.command.as_deref().is_some_and(|c| c.trim().is_empty()) {
+        return Err("--command must not be empty".into());
+    }
     let new = match (&args.harness, &args.command, args.off) {
         (Some(h), None, false) => {
             let t = harness_template(h).ok_or_else(|| format!("unknown harness '{h}'"))?;

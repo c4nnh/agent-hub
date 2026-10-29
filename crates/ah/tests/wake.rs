@@ -87,3 +87,10 @@ fn conflicting_flags_are_rejected() {
     assert!(wake(&cfg, &folder, Some("cursor"), None, true).is_err());
     assert_eq!(stored(&cfg, &folder), None);
 }
+
+#[test]
+fn empty_command_is_rejected() {
+    let (cfg, folder) = bound();
+    assert!(wake(&cfg, &folder, None, Some("   "), false).is_err());
+    assert_eq!(stored(&cfg, &folder), None);
+}
