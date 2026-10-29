@@ -188,6 +188,7 @@ async fn stop_hook_blocks_once_without_listener() {
     let input = |active| HookInput {
         cwd: Some(folder.path().to_path_buf()),
         stop_hook_active: active,
+        ..Default::default()
     };
     let mut out = Vec::new();
     hooks::run_stop(cfg.path(), None, &input(false), &mut out)
@@ -226,6 +227,7 @@ async fn hooks_silent_in_unbound_folder() {
     let input = HookInput {
         cwd: Some(folder.path().to_path_buf()),
         stop_hook_active: false,
+        ..Default::default()
     };
     let mut out = Vec::new();
     hooks::run_stop(cfg.path(), None, &input, &mut out)
@@ -243,6 +245,7 @@ async fn session_start_offline_still_gives_context() {
     let input = HookInput {
         cwd: Some(folder.path().to_path_buf()),
         stop_hook_active: false,
+        ..Default::default()
     };
     let mut out = Vec::new();
     hooks::run_session_start(cfg.path(), None, &input, &mut out)
@@ -257,4 +260,174 @@ async fn session_start_offline_still_gives_context() {
         ctx.contains("ah wait") && ctx.contains("new message from"),
         "{ctx}"
     );
+}
+
+fn cursor_doc(dir: &Path) -> Value {
+    serde_json::from_slice(&std::fs::read(dir.join("hooks.json")).unwrap()).unwrap()
+}
+
+fn stop_commands(v: &Value) -> Vec<String> {
+    v["hooks"]["stop"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|h| h["command"].as_str().map(String::from))
+        .collect()
+}
+
+#[test]
+fn cursor_fresh_install_then_idempotent() {
+    let home = tempfile::tempdir().unwrap();
+    let cursor = home.path().join(".cursor");
+    std::fs::create_dir(&cursor).unwrap();
+    assert_eq!(
+        hooks::ensure_cursor_hooks(Some(&cursor)).unwrap(),
+        HookStatus::Installed
+    );
+    let v = cursor_doc(&cursor);
+    assert_eq!(
+        v,
+        json!({"version": 1, "hooks": {"stop": [{"command": "ah hook cursor-stop"}]}})
+    );
+
+    let before = std::fs::read(cursor.join("hooks.json")).unwrap();
+    assert_eq!(
+        hooks::ensure_cursor_hooks(Some(&cursor)).unwrap(),
+        HookStatus::Unchanged
+    );
+    assert_eq!(std::fs::read(cursor.join("hooks.json")).unwrap(), before);
+    assert_eq!(hooks::cursor_status(Some(&cursor)).unwrap(), "installed");
+    assert_eq!(
+        hooks::ensure_cursor_hooks(None).unwrap(),
+        HookStatus::NotApplicable
+    );
+}
+
+#[test]
+fn cursor_install_preserves_unrelated_entries_and_uninstalls_only_ours() {
+    let cursor = tempfile::tempdir().unwrap();
+    let original = json!({
+        "version": 1,
+        "custom": {"keep": true},
+        "hooks": {
+            "stop": [{"command": "./audit.sh", "loop_limit": 10}],
+            "afterFileEdit": [{"command": "./format.sh"}]
+        }
+    });
+    std::fs::write(
+        cursor.path().join("hooks.json"),
+        serde_json::to_vec_pretty(&original).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        hooks::cursor_status(Some(cursor.path())).unwrap(),
+        "not installed"
+    );
+    assert_eq!(
+        hooks::ensure_cursor_hooks(Some(cursor.path())).unwrap(),
+        HookStatus::Installed
+    );
+    let v = cursor_doc(cursor.path());
+    let keys: Vec<_> = v.as_object().unwrap().keys().cloned().collect();
+    assert_eq!(keys, vec!["version", "custom", "hooks"]);
+    assert_eq!(stop_commands(&v), vec!["./audit.sh", "ah hook cursor-stop"]);
+    assert_eq!(
+        v["hooks"]["afterFileEdit"],
+        original["hooks"]["afterFileEdit"]
+    );
+    assert_eq!(v["hooks"]["stop"][0], original["hooks"]["stop"][0]);
+
+    let removed = hooks::uninstall_cursor(Some(cursor.path())).unwrap();
+    assert_eq!(removed, vec!["ah hook cursor-stop"]);
+    assert_eq!(cursor_doc(cursor.path()), original);
+    assert!(
+        hooks::uninstall_cursor(Some(cursor.path()))
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn cursor_existing_ah_hook_counts_as_installed() {
+    let cursor = tempfile::tempdir().unwrap();
+    let bytes = br#"{"version":1,"hooks":{"stop":[{"command":"/opt/bin/ah hook cursor-stop"}]}}"#;
+    std::fs::write(cursor.path().join("hooks.json"), bytes).unwrap();
+    assert_eq!(
+        hooks::ensure_cursor_hooks(Some(cursor.path())).unwrap(),
+        HookStatus::Unchanged
+    );
+    assert_eq!(
+        std::fs::read(cursor.path().join("hooks.json")).unwrap(),
+        bytes
+    );
+    // Uninstall of an only-ours file drops the emptied stop list and hooks object.
+    hooks::uninstall_cursor(Some(cursor.path())).unwrap();
+    assert_eq!(cursor_doc(cursor.path()), json!({"version": 1}));
+}
+
+#[test]
+fn report_names_each_target_or_falls_back() {
+    let home = tempfile::tempdir().unwrap();
+    let report = |dirs: &hooks::HookDirs| {
+        let mut out = Vec::new();
+        hooks::ensure_and_report(dirs, &mut out).unwrap();
+        String::from_utf8(out).unwrap()
+    };
+    let none = report(&hooks::HookDirs::default());
+    assert_eq!(none.trim_end(), hooks::NO_HOOKS);
+    assert!(none.contains("ah wait") && none.contains("wait_for_message"));
+
+    let cursor_only = hooks::HookDirs {
+        claude: None,
+        cursor: Some(home.path().join(".cursor")),
+    };
+    let text = report(&cursor_only);
+    assert!(
+        text.contains("cursor hook installed (ah hook cursor-stop)"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("claude") && !text.contains("no editor hooks"),
+        "{text}"
+    );
+
+    let both = hooks::HookDirs {
+        claude: Some(home.path().join(".claude")),
+        cursor: Some(home.path().join(".cursor")),
+    };
+    let text = report(&both);
+    assert!(text.contains("claude code hooks installed"), "{text}");
+    assert!(
+        text.contains("cursor hook present (ah hook cursor-stop)"),
+        "{text}"
+    );
+    assert_eq!(text.lines().count(), 2, "{text}");
+    let text = report(&both);
+    assert!(text.contains("claude code hooks present") && text.contains("cursor hook present"));
+}
+
+#[tokio::test]
+async fn cursor_stop_silent_when_unbound_or_offline() {
+    let (cfg, folder) = bound_env();
+    let other = tempfile::tempdir().unwrap();
+    for roots in [
+        vec![],
+        vec![other.path().to_path_buf()],
+        vec![folder.path().to_path_buf()],
+    ] {
+        let input = HookInput {
+            workspace_roots: roots,
+            ..Default::default()
+        };
+        let mut out = Vec::new();
+        hooks::run_cursor_stop(cfg.path(), None, &input, &mut out)
+            .await
+            .unwrap();
+        assert!(out.is_empty());
+    }
+    // A Cursor stop payload parses: no cwd, workspace_roots given.
+    let raw = r#"{"status":"completed","loop_count":0,"conversation_id":"c","workspace_roots":["/w"],"hook_event_name":"stop"}"#;
+    let input: HookInput = serde_json::from_str(raw).unwrap();
+    assert_eq!(input.workspace_roots, vec![std::path::PathBuf::from("/w")]);
+    assert!(input.cwd.is_none());
 }

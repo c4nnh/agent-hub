@@ -457,7 +457,7 @@ async fn session_started_after_send_delivers_since_join(pool: PgPool) {
         &a,
         dir.path(),
         Some("team"),
-        None,
+        &ah::hooks::HookDirs::default(),
         &mut Vec::new(),
     )
     .await
@@ -486,7 +486,7 @@ async fn wait_delivery_advances_shared_cursor(pool: PgPool) {
         &a,
         dir.path(),
         Some("team"),
-        None,
+        &ah::hooks::HookDirs::default(),
         &mut Vec::new(),
     )
     .await
@@ -528,7 +528,7 @@ async fn restart_does_not_redeliver_own_reply(pool: PgPool) {
         &a,
         dir.path(),
         Some("team"),
-        None,
+        &ah::hooks::HookDirs::default(),
         &mut Vec::new(),
     )
     .await

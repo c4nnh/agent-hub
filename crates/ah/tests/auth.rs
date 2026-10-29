@@ -119,7 +119,10 @@ async fn login(hub: &str, dir: &Path, claude: Option<&Path>) -> String {
         true,
         Duration::from_millis(20),
         Duration::from_secs(10),
-        claude,
+        &ah::hooks::HookDirs {
+            claude: claude.map(Path::to_path_buf),
+            cursor: None,
+        },
         &mut out,
     )
     .await
@@ -172,7 +175,10 @@ async fn auth_flow_saves_credentials(pool: PgPool) {
                 true,
                 Duration::from_millis(20),
                 Duration::from_secs(1),
-                Some(&claude),
+                &ah::hooks::HookDirs {
+                    claude: Some(claude),
+                    cursor: None,
+                },
                 &mut out,
             )
             .await
@@ -257,7 +263,7 @@ async fn poll_times_out() {
         true,
         Duration::from_millis(10),
         Duration::from_millis(100),
-        None,
+        &ah::hooks::HookDirs::default(),
         &mut out,
     )
     .await;

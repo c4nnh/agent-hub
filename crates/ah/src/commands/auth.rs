@@ -13,14 +13,14 @@ pub async fn run_auth(
     no_browser: bool,
     poll_interval: Duration,
     poll_timeout: Duration,
-    claude_dir: Option<&Path>,
+    hooks: &crate::hooks::HookDirs,
     out: &mut impl Write,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let existing = Credentials::load(dir)?;
     if let Some(c) = existing {
         writeln!(out, "Already logged in as {}", c.email)?;
         // Lets an existing install pick up hooks by running login again.
-        crate::hooks::ensure_and_report(claude_dir, out)?;
+        crate::hooks::ensure_and_report(hooks, out)?;
         return Ok(());
     }
     let client = HubClient::new(cfg.hub_url.clone(), None);
@@ -51,7 +51,7 @@ pub async fn run_auth(
             }
             .save(dir)?;
             writeln!(out, "Logged in as {}", r.email)?;
-            crate::hooks::ensure_and_report(claude_dir, out)?;
+            crate::hooks::ensure_and_report(hooks, out)?;
             return Ok(());
         }
         if tokio::time::Instant::now() >= deadline {

@@ -67,12 +67,12 @@ pub async fn run_join(
     client: &HubClient,
     cwd: &Path,
     channel: Option<&str>,
-    claude_dir: Option<&Path>,
+    hooks: &crate::hooks::HookDirs,
     out: &mut impl Write,
 ) -> Res {
     let ch = pick_channel(client, channel).await?;
     // Installed before binding, so a bound folder is never without its Stop hook.
-    crate::hooks::ensure_and_report(claude_dir, out)?;
+    crate::hooks::ensure_and_report(hooks, out)?;
     let mut bindings = Bindings::load(dir)?;
     let folder = Bindings::key(cwd)?;
     let b = bindings.0.entry(folder.clone()).or_default();

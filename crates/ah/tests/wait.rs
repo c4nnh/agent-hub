@@ -274,7 +274,7 @@ async fn message_after_join_before_first_wait_is_delivered(pool: PgPool) {
         &e.c,
         e.folder.path(),
         Some("team"),
-        None,
+        &ah::hooks::HookDirs::default(),
         &mut Vec::new(),
     )
     .await
@@ -283,4 +283,45 @@ async fn message_after_join_before_first_wait_is_delivered(pool: PgPool) {
     let got = wait_once(&e).await.unwrap();
     assert_eq!(got.len(), 1, "{got:?}");
     assert_eq!(got[0]["body"], "after join");
+}
+
+#[sqlx::test(migrations = "../hub/migrations")]
+async fn cursor_stop_delivers_once_and_shares_the_cursor(pool: PgPool) {
+    use ah::{cursors::Cursors, hooks};
+    let e = env(&pool).await;
+    post(&e.c, e.channel, "other", "history").await;
+    let input = hooks::HookInput {
+        workspace_roots: vec![e.folder.path().to_path_buf()],
+        ..Default::default()
+    };
+    let stop = || async {
+        let mut out = Vec::new();
+        hooks::run_cursor_stop(e.cfg.path(), Some(&e.c), &input, &mut out)
+            .await
+            .unwrap();
+        String::from_utf8(out).unwrap()
+    };
+    // First stop seeds the cursor at the tail: history is not announced.
+    assert_eq!(stop().await, "");
+    let folder = Bindings::key(e.folder.path()).unwrap();
+    let seeded = Cursors::load_folder(e.cfg.path(), &folder).unwrap()[&e.channel];
+
+    post(&e.c, e.channel, "ann", "please review").await;
+    let text = stop().await;
+    let v: serde_json::Value = serde_json::from_str(text.trim_end()).unwrap();
+    let msg = v["followup_message"].as_str().unwrap();
+    assert!(
+        msg.starts_with("new message from ann in #team: please review\n"),
+        "{msg}"
+    );
+    assert!(msg.ends_with(hooks::CURSOR_FOLLOWUP_CLOSE), "{msg}");
+    let advanced = Cursors::load_folder(e.cfg.path(), &folder).unwrap()[&e.channel];
+    assert!(advanced > seeded);
+
+    // Delivered: the next stop is quiet, and ah wait does not reprint it.
+    assert_eq!(stop().await, "");
+    post(&e.c, e.channel, "ann", "next").await;
+    let got = wait_once(&e).await.unwrap();
+    let bodies: Vec<_> = got.iter().map(|m| m["body"].as_str().unwrap()).collect();
+    assert_eq!(bodies, vec!["next"]);
 }

@@ -3,7 +3,7 @@
 use super::{Session, UNBOUND, instructions};
 use crate::{
     client::ClientError,
-    commands::chat::{fetch_since, sanitize},
+    commands::chat::{announce_line, fetch_since},
 };
 use ah_common::{ChannelSummary, Message, PostMessage, SenderType, UpsertContext};
 use rmcp::{
@@ -20,8 +20,6 @@ use uuid::Uuid;
 const DEFAULT_WAIT_SECS: u64 = 50;
 const DEFAULT_LIMIT: i64 = 100;
 const MAX_LIMIT: i64 = 500;
-/// Longest message body shown in an announce line.
-const ANNOUNCE_CHARS: usize = 200;
 const STALE: &str = "stale version: merge with the current entry and retry with its version";
 
 type ToolResult = Result<String, String>;
@@ -221,18 +219,12 @@ impl AgentHub {
             // One plain line per message for the agent to relay to its user, then the JSON.
             let mut out = String::new();
             for t in &tagged {
-                let body = sanitize(&t.message.body);
-                let shown = if body.chars().count() > ANNOUNCE_CHARS {
-                    let cut: String = body.chars().take(ANNOUNCE_CHARS).collect();
-                    format!("{cut}...")
-                } else {
-                    body
-                };
-                out.push_str(&format!(
-                    "new message from {} in #{}: {shown}\n",
-                    sanitize(&t.message.sender_name),
-                    sanitize(t.channel),
+                out.push_str(&announce_line(
+                    &t.message.sender_name,
+                    t.channel,
+                    &t.message.body,
                 ));
+                out.push('\n');
             }
             out.push_str(&json(&tagged)?);
             Ok(out)

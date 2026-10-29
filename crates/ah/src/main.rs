@@ -21,13 +21,13 @@ enum Command {
         #[command(subcommand)]
         command: AuthCommand,
     },
-    /// Claude Code hook entry points (run by the hooks that `ah auth login` and
+    /// Claude Code and Cursor hook entry points (run by the hooks that `ah auth login` and
     /// `ah channel join` install)
     Hook {
         #[command(subcommand)]
         event: HookEvent,
     },
-    /// Inspect or remove the installed Claude Code hooks
+    /// Inspect or remove the installed Claude Code and Cursor hooks
     Hooks {
         #[command(subcommand)]
         command: HooksCommand,
@@ -86,11 +86,13 @@ enum HookEvent {
     Stop,
     /// SessionStart hook: lists the folder's channels and unread counts
     SessionStart,
+    /// Cursor stop hook: hands pending messages to the agent as a follow-up message
+    CursorStop,
 }
 
 #[derive(Subcommand)]
 enum HooksCommand {
-    /// Remove the `ah hook` entries from ~/.claude/settings.json
+    /// Remove the `ah hook` entries from ~/.claude/settings.json and ~/.cursor/hooks.json
     Uninstall,
     /// Show whether the hooks are installed
     Status,
@@ -166,6 +168,7 @@ async fn main() {
         let event = match event {
             HookEvent::Stop => hooks::Event::Stop,
             HookEvent::SessionStart => hooks::Event::SessionStart,
+            HookEvent::CursorStop => hooks::Event::CursorStop,
         };
         hooks::run_hook(&dir, event).await;
         return;
@@ -185,7 +188,10 @@ fn run_hooks(
 ) -> Result<(), Box<dyn std::error::Error>> {
     match command {
         HooksCommand::Uninstall => {
-            let removed = hooks::uninstall(hooks::user_claude_dir().as_deref())?;
+            let mut removed = hooks::uninstall(hooks::user_claude_dir().as_deref())?;
+            removed.extend(hooks::uninstall_cursor(
+                hooks::user_cursor_dir().as_deref(),
+            )?);
             if removed.is_empty() {
                 writeln!(out, "no ah hook entries found")?;
             }
@@ -196,6 +202,8 @@ fn run_hooks(
         HooksCommand::Status => {
             let status = hooks::status(hooks::claude_dir().as_deref())?;
             writeln!(out, "claude code hooks: {status}")?;
+            let status = hooks::cursor_status(hooks::cursor_dir().as_deref())?;
+            writeln!(out, "cursor hooks: {status}")?;
         }
     }
     Ok(())
@@ -219,7 +227,7 @@ async fn run(cli: Cli, dir: &std::path::Path) -> Result<(), Box<dyn std::error::
                 no_browser,
                 auth::POLL_INTERVAL,
                 auth::POLL_TIMEOUT,
-                hooks::claude_dir().as_deref(),
+                &hooks::HookDirs::detect(),
                 &mut out,
             )
             .await
@@ -269,16 +277,9 @@ async fn run(cli: Cli, dir: &std::path::Path) -> Result<(), Box<dyn std::error::
                     channel::run_create(&client, &name, &mut out).await
                 }
                 ChannelCommand::Join { channel } => {
-                    let claude = hooks::claude_dir();
-                    channel::run_join(
-                        dir,
-                        &client,
-                        &cwd,
-                        channel.as_deref(),
-                        claude.as_deref(),
-                        &mut out,
-                    )
-                    .await
+                    let targets = hooks::HookDirs::detect();
+                    channel::run_join(dir, &client, &cwd, channel.as_deref(), &targets, &mut out)
+                        .await
                 }
                 ChannelCommand::Leave {
                     channel,

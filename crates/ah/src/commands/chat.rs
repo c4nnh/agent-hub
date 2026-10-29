@@ -97,6 +97,25 @@ pub fn sanitize(text: &str) -> String {
         .collect()
 }
 
+/// Longest message body shown in an announce line.
+const ANNOUNCE_CHARS: usize = 200;
+
+/// `new message from <sender> in #<channel>: <body>`, sanitized, body cut to `ANNOUNCE_CHARS`.
+pub fn announce_line(sender: &str, channel: &str, body: &str) -> String {
+    let body = sanitize(body);
+    let shown = if body.chars().count() > ANNOUNCE_CHARS {
+        let cut: String = body.chars().take(ANNOUNCE_CHARS).collect();
+        format!("{cut}...")
+    } else {
+        body
+    };
+    format!(
+        "new message from {} in #{}: {shown}",
+        sanitize(sender),
+        sanitize(channel)
+    )
+}
+
 pub fn render_message(msg: &Message) -> String {
     let prefix = match msg.sender_type {
         SenderType::Agent => ROBOT_PREFIX,

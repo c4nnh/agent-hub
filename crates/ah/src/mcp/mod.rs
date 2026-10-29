@@ -240,6 +240,11 @@ pub fn default_agent_name(folder: &Path) -> String {
     } else {
         "agent"
     };
+    agent_name(harness, folder)
+}
+
+/// `<harness>@<hostname>/<folder name>`, capped at the hub's name limit.
+pub fn agent_name(harness: &str, folder: &Path) -> String {
     let host = gethostname::gethostname().to_string_lossy().into_owned();
     let base = folder
         .file_name()
