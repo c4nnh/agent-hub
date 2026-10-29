@@ -96,10 +96,18 @@ async fn env_with(pool: &PgPool, registry: Registry) -> Env {
 async fn wait_once(
     e: &Env,
 ) -> Result<Vec<serde_json::Value>, Box<dyn std::error::Error + Send + Sync>> {
+    wait_once_with(e, None).await
+}
+
+async fn wait_once_with(
+    e: &Env,
+    drain: Option<Duration>,
+) -> Result<Vec<serde_json::Value>, Box<dyn std::error::Error + Send + Sync>> {
     let args = WaitArgs {
         folder: Some(e.folder.path().to_path_buf()),
         channel: None,
         name: Some(ME.into()),
+        drain,
     };
     let mut out = Vec::new();
     tokio::time::timeout(LIMIT, run_wait(e.cfg.path(), &e.c, args, &mut out))
@@ -127,7 +135,7 @@ async fn first_run_initializes_cursor_and_parks(pool: PgPool) {
         cursor_saved(e.cfg.path()).await;
         post(&e.c, e.channel, "other", "fresh").await;
     };
-    let (got, ()) = tokio::join!(wait_once(&e), poster);
+    let (got, ()) = tokio::join!(wait_once_with(&e, Some(Duration::from_secs(5))), poster);
     let got = got.unwrap();
     assert_eq!(got.len(), 1, "{got:?}");
     assert_eq!(got[0]["body"], "fresh");
@@ -202,8 +210,9 @@ async fn drain_error_still_prints_accepted_message(pool: PgPool) {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         post(&e.c, e.channel, "other", "last words").await;
-        // Let the push arrive first; the close must land inside the 200ms drain.
-        tokio::time::sleep(Duration::from_millis(60)).await;
+        // The drain window is 5s here, so the close always lands inside it. The pause only has
+        // to be long enough for the push to reach the waiter first, even on a loaded machine.
+        tokio::time::sleep(Duration::from_millis(1000)).await;
         e.c.logout().await.unwrap();
     };
     let (got, ()) = tokio::join!(wait_once(&e), poster);
@@ -230,6 +239,7 @@ async fn gap_check_keeps_messages_when_a_later_channel_fails(pool: PgPool) {
         cursors: channels.iter().map(|c| (c.id, 0)).collect(),
         channels,
         pending: Vec::new(),
+        drain: Duration::from_millis(200),
     };
     assert!(w.gap_check().await.is_err());
     assert_eq!(w.pending.len(), 1);

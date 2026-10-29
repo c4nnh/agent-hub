@@ -161,6 +161,7 @@ async fn run(cli: Cli, dir: &std::path::Path) -> Result<(), Box<dyn std::error::
                 folder,
                 channel,
                 name,
+                ..Default::default()
             };
             wait::run_wait(dir, &client, args, &mut out)
                 .await

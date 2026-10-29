@@ -42,6 +42,9 @@ pub struct WaitArgs {
     pub folder: Option<PathBuf>,
     pub channel: Option<String>,
     pub name: Option<String>,
+    /// Test hook: overrides the drain window.
+    #[doc(hidden)]
+    pub drain: Option<Duration>,
 }
 
 /// `{config_dir}/wait-cursors.json`: last seen message id per channel, per canonical folder.
@@ -80,6 +83,7 @@ pub struct Waiter<'a> {
     /// are already printed or sit in this buffer, which `next_messages` returns even when a
     /// later step errors. Never hold accepted messages in a local that an error can drop.
     pub pending: Vec<Message>,
+    pub drain: Duration,
 }
 
 impl Waiter<'_> {
@@ -132,7 +136,7 @@ impl Waiter<'_> {
             let frame = if self.pending.is_empty() {
                 next_frame(&mut ws).await?
             } else {
-                match tokio::time::timeout(DRAIN, next_frame(&mut ws)).await {
+                match tokio::time::timeout(self.drain, next_frame(&mut ws)).await {
                     Ok(frame) => frame?,
                     Err(_) => return Ok(()),
                 }
@@ -241,6 +245,7 @@ pub async fn run_wait(
         channels,
         cursors,
         pending: Vec::new(),
+        drain: args.drain.unwrap_or(DRAIN),
     };
     let messages = waiter.next_messages().await?;
     for m in &messages {
