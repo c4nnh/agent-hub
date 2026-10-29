@@ -282,21 +282,25 @@ fn bound_channels(dir: &Path, input: &HookInput) -> Option<(String, Vec<Uuid>)> 
 }
 
 /// Channel names for `ids`, falling back to the id when the hub cannot be asked in time.
-async fn channel_names(client: Option<&HubClient>, ids: &[Uuid]) -> Vec<(Uuid, String)> {
+/// The flag says whether the hub answered.
+async fn channel_names(client: Option<&HubClient>, ids: &[Uuid]) -> (Vec<(Uuid, String)>, bool) {
     let listed = match client {
         Some(c) => tokio::time::timeout(NET_TIMEOUT, c.list_channels())
             .await
             .ok()
-            .and_then(Result::ok)
-            .unwrap_or_default(),
-        None => Vec::new(),
+            .and_then(Result::ok),
+        None => None,
     };
-    ids.iter()
+    let reachable = listed.is_some();
+    let listed = listed.unwrap_or_default();
+    let names = ids
+        .iter()
         .map(|id| {
             let name = listed.iter().find(|c| c.id == *id);
             (*id, name.map_or_else(|| id.to_string(), |c| c.name.clone()))
         })
-        .collect()
+        .collect();
+    (names, reachable)
 }
 
 /// `ah hook stop`. Writes nothing unless the stop must be blocked.
@@ -314,11 +318,8 @@ pub async fn run_stop(
     let (StopDecision::Block, Some((_, ids))) = (decision, bound) else {
         return Ok(());
     };
-    let names: Vec<String> = channel_names(client, &ids)
-        .await
-        .into_iter()
-        .map(|(_, n)| n)
-        .collect();
+    let (named, _) = channel_names(client, &ids).await;
+    let names: Vec<String> = named.into_iter().map(|(_, n)| n).collect();
     let reason = format!(
         "This folder is in Agent Hub channel(s) {}. Start the listener before stopping: run `ah wait` as a background Bash command (run_in_background). It wakes you when a teammate messages; announce each as: {ANNOUNCE}.",
         names.join(", ")
@@ -339,8 +340,10 @@ pub async fn run_session_start(
     };
     let cursors = Cursors::load_folder(dir, &key).unwrap_or_default();
     let mut parts = Vec::new();
-    for (id, name) in channel_names(client, &ids).await {
-        let unread = match (client, cursors.get(&id)) {
+    let (named, reachable) = channel_names(client, &ids).await;
+    for (id, name) in named {
+        // An unreachable hub already cost one timeout; do not pay another per channel.
+        let unread = match (client.filter(|_| reachable), cursors.get(&id)) {
             (Some(c), Some(since)) => unread_count(c, id, *since).await,
             _ => None,
         };

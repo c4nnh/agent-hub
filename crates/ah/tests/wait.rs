@@ -5,6 +5,7 @@ use ah::{
         channel::run_join,
         wait::{Refusal, WaitArgs, Waiter, run_wait},
     },
+    cursors::listener_alive,
 };
 use ah_common::{PostMessage, SenderType};
 use ah_hub::{
@@ -134,12 +135,16 @@ async fn cursor_saved(cfg: &Path) {
 async fn first_run_initializes_cursor_and_parks(pool: PgPool) {
     let e = env(&pool).await;
     post(&e.c, e.channel, "other", "old history").await;
+    let key = Bindings::key(e.folder.path()).unwrap();
     let poster = async {
         cursor_saved(e.cfg.path()).await;
+        // Parked: the pidfile marks the folder as listening.
+        assert!(listener_alive(e.cfg.path(), &key));
         post(&e.c, e.channel, "other", "fresh").await;
     };
     let (got, ()) = tokio::join!(wait_once(&e), poster);
     let got = got.unwrap();
+    assert!(!listener_alive(e.cfg.path(), &key));
     assert_eq!(got.len(), 1, "{got:?}");
     assert_eq!(got[0]["body"], "fresh");
     assert_eq!(got[0]["channel"], "team");
@@ -184,6 +189,16 @@ async fn refusal_exits_2(pool: PgPool) {
     let err = wait_once(&e).await.unwrap_err();
     assert!(err.downcast_ref::<Refusal>().is_some(), "{err}");
     assert!(err.to_string().contains("ah auth login"), "{err}");
+    let key = Bindings::key(e.folder.path()).unwrap();
+    assert!(
+        !e.cfg
+            .path()
+            .join("wait-pids")
+            .read_dir()
+            .unwrap()
+            .any(|_| true)
+    );
+    assert!(!listener_alive(e.cfg.path(), &key));
 }
 
 #[sqlx::test(migrations = "../hub/migrations")]

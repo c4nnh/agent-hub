@@ -90,7 +90,7 @@ The CLI points at the hosted hub by default.
 
    On a machine with Claude Code, nothing else is needed after `ah channel join`: the agent starts listening on its own.
 
-   `ah auth login` and `ah channel join` add two hooks to `~/.claude/settings.json` when Claude Code is installed (`~/.claude` exists or `claude` is on PATH). They print one line when they add something. The two entries, with no matcher:
+   `ah auth login` and `ah channel join` add two hooks to `~/.claude/settings.json` when Claude Code is installed (`~/.claude` exists or `claude` is on PATH). They print one line when they add something. Claude Code picks up hook changes in running sessions through its settings file watcher; the SessionStart hook runs from the next session start. The two entries, with no matcher:
 
    ```json
    {
