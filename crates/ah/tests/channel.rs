@@ -91,7 +91,7 @@ async fn invitation_accept_via_flags(pool: PgPool) {
         .unwrap();
 
     let mut out = Vec::new();
-    run_invitation(&guest, None, &mut out).await.unwrap();
+    run_invitation(&guest, None, false, &mut out).await.unwrap();
     let listing = text(out);
     assert!(
         listing.contains("team") && listing.contains("a@b.co"),
@@ -100,7 +100,7 @@ async fn invitation_accept_via_flags(pool: PgPool) {
 
     let inv = guest.list_invitations().await.unwrap();
     let mut out = Vec::new();
-    run_invitation(&guest, Some((inv[0].id, true)), &mut out)
+    run_invitation(&guest, Some((inv[0].id, true)), false, &mut out)
         .await
         .unwrap();
     let names: Vec<_> = guest
@@ -128,7 +128,7 @@ async fn leave_unbinds(pool: PgPool) {
         .await
         .unwrap();
     let inv = guest.list_invitations().await.unwrap();
-    run_invitation(&guest, Some((inv[0].id, true)), &mut out)
+    run_invitation(&guest, Some((inv[0].id, true)), false, &mut out)
         .await
         .unwrap();
 
@@ -240,4 +240,59 @@ async fn config_adds_extra_folder(pool: PgPool) {
     let b = Bindings::load(dir.path()).unwrap();
     assert!(b.for_folder(cwd.path()).is_none());
     assert_eq!(b.for_folder(newf.path()).unwrap().channel_ids.len(), 1);
+}
+
+#[sqlx::test(migrations = "../hub/migrations")]
+async fn invitation_list_prints_without_tty(pool: PgPool) {
+    let hub = spawn_hub(pool.clone()).await;
+    let owner = client(&pool, &hub, "a@b.co").await;
+    let guest = client(&pool, &hub, "g@b.co").await;
+    let mut out = Vec::new();
+    run_create(&owner, "team", &mut out).await.unwrap();
+    run_invite(&owner, "team", "g@b.co", &mut out)
+        .await
+        .unwrap();
+    let inv = guest.list_invitations().await.unwrap();
+
+    let mut out = Vec::new();
+    run_invitation(&guest, None, false, &mut out).await.unwrap();
+    let listing = text(out);
+    assert!(listing.contains(&inv[0].id.to_string()), "{listing}");
+    assert!(
+        listing.contains("team") && listing.contains("a@b.co"),
+        "{listing}"
+    );
+    // Listing alone does not answer the invitation.
+    assert_eq!(guest.list_invitations().await.unwrap().len(), 1);
+}
+
+#[sqlx::test(migrations = "../hub/migrations")]
+async fn config_folder_refuses_overwrite(pool: PgPool) {
+    let hub = spawn_hub(pool.clone()).await;
+    let c = client(&pool, &hub, "a@b.co").await;
+    let dir = tempfile::tempdir().unwrap();
+    let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let mut out = Vec::new();
+    run_create(&c, "team", &mut out).await.unwrap();
+    run_create(&c, "other", &mut out).await.unwrap();
+    run_join(dir.path(), &c, a.path(), Some("team"), &mut out)
+        .await
+        .unwrap();
+    run_join(dir.path(), &c, b.path(), Some("other"), &mut out)
+        .await
+        .unwrap();
+    let before = Bindings::load(dir.path()).unwrap();
+
+    let r = run_config(
+        dir.path(),
+        a.path(),
+        ConfigArgs {
+            folder: Some(b.path().to_path_buf()),
+            add_extra_folder: None,
+            remove_extra_folder: None,
+        },
+        &mut out,
+    );
+    assert!(r.unwrap_err().to_string().contains("already bound"));
+    assert_eq!(Bindings::load(dir.path()).unwrap(), before);
 }

@@ -4,6 +4,7 @@ use ah::{
     config::{self, Credentials},
 };
 use clap::{Parser, Subcommand};
+use std::io::IsTerminal;
 
 #[derive(Parser)]
 #[command(name = "ah", about = "Agent Hub CLI")]
@@ -131,9 +132,13 @@ async fn run(cli: Cli, dir: &std::path::Path) -> Result<(), Box<dyn std::error::
                     command: InvitationCommand::List { respond, answer },
                 } => match respond {
                     Some(id) => {
-                        channel::run_invitation(&client, Some((id, answer.accept)), &mut out).await
+                        channel::run_invitation(&client, Some((id, answer.accept)), false, &mut out)
+                            .await
                     }
-                    None => channel::run_invitation_interactive(&client, &mut out).await,
+                    None => {
+                        let is_tty = std::io::stdin().is_terminal();
+                        channel::run_invitation(&client, None, is_tty, &mut out).await
+                    }
                 },
                 ChannelCommand::Config {
                     folder,
@@ -151,5 +156,26 @@ async fn run(cli: Cli, dir: &std::path::Path) -> Result<(), Box<dyn std::error::
                 ),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ID: &str = "00000000-0000-0000-0000-000000000001";
+
+    #[test]
+    fn respond_requires_accept_or_reject() {
+        let parse = |extra: &[&str]| {
+            let mut a = vec!["ah", "channel", "invitation", "list"];
+            a.extend_from_slice(extra);
+            Cli::try_parse_from(a)
+        };
+        assert!(parse(&["--respond", ID, "--accept"]).is_ok());
+        assert!(parse(&["--respond", ID, "--reject"]).is_ok());
+        assert!(parse(&["--respond", ID]).is_err());
+        assert!(parse(&["--respond", ID, "--accept", "--reject"]).is_err());
+        assert!(parse(&[]).is_ok());
     }
 }

@@ -146,11 +146,12 @@ pub async fn run_invite(
     Ok(())
 }
 
-/// `respond`: `Some((id, accept))` answers directly; `None` lists, then prompts when a TTY is
-/// available to answer.
+/// `respond`: `Some((id, accept))` answers directly. Otherwise prints the pending list, then
+/// prompts to answer one only when `is_tty` (callers pass `stdin().is_terminal()`).
 pub async fn run_invitation(
     client: &HubClient,
     respond: Option<(Uuid, bool)>,
+    is_tty: bool,
     out: &mut impl Write,
 ) -> Res {
     if let Some((id, accept)) = respond {
@@ -170,14 +171,7 @@ pub async fn run_invitation(
     for i in &invs {
         writeln!(out, "{}  {}  {}", i.id, i.channel_name, i.invited_by_email)?;
     }
-    Ok(())
-}
-
-/// Interactive follow-up for `ah channel invitation list` (no flags): pick one, then answer.
-pub async fn run_invitation_interactive(client: &HubClient, out: &mut impl Write) -> Res {
-    let invs = client.list_invitations().await?;
-    if invs.is_empty() {
-        writeln!(out, "no pending invitations")?;
+    if !is_tty {
         return Ok(());
     }
     let labels: Vec<_> = invs
@@ -192,7 +186,15 @@ pub async fn run_invitation_interactive(client: &HubClient, out: &mut impl Write
         .with_prompt("Respond")
         .items(&["Accept", "Reject"])
         .interact()?;
-    run_invitation(client, Some((invs[i].id, a == 0)), out).await
+    let accept = a == 0;
+    client.respond_invitation(invs[i].id, accept).await?;
+    writeln!(
+        out,
+        "{} invitation {}",
+        if accept { "Accepted" } else { "Rejected" },
+        invs[i].id
+    )?;
+    Ok(())
 }
 
 pub fn run_config(dir: &Path, cwd: &Path, args: ConfigArgs, out: &mut impl Write) -> Res {
@@ -201,6 +203,9 @@ pub fn run_config(dir: &Path, cwd: &Path, args: ConfigArgs, out: &mut impl Write
     if let Some(target) = &args.folder {
         let new_key = Bindings::key(target)?;
         if new_key != key {
+            if bindings.0.contains_key(&new_key) {
+                return Err(format!("{new_key} is already bound; refusing to overwrite").into());
+            }
             let moved = bindings
                 .0
                 .remove(&key)
