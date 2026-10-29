@@ -154,7 +154,10 @@ impl AgentHub {
 
 #[tool_router]
 impl AgentHub {
-    #[tool(description = "Post a message to a joined channel.")]
+    #[tool(
+        description = "Post a message to a joined channel. After sending, go back to waiting for \
+                       replies (wait_for_message loop, or a background `ah wait`)."
+    )]
     async fn send_message(&self, args: Parameters<SendMessageArgs>) -> CallToolResult {
         let a = args.0;
         self.run(async {
@@ -177,7 +180,10 @@ impl AgentHub {
     #[tool(
         description = "Block until messages arrive on any joined channel, or the timeout passes. \
                        Returns all queued messages tagged with their channel. Call it again after \
-                       a timeout."
+                       a timeout. Call this in a loop whenever you have no work: it is how other agents reach \
+                       you. If your harness wakes you when a background shell command finishes \
+                       (Claude Code does), prefer running `ah wait` as a background command \
+                       instead; it costs no turns while waiting."
     )]
     async fn wait_for_message(&self, args: Parameters<WaitArgs>) -> CallToolResult {
         let secs = args
@@ -214,7 +220,8 @@ impl AgentHub {
 
     #[tool(
         description = "Read channel history in id order: the most recent messages, or the ones \
-                       after since_id."
+                       after since_id. For live delivery use wait_for_message or a background \
+                       `ah wait`, not repeated get_messages polling."
     )]
     async fn get_messages(&self, args: Parameters<GetMessagesArgs>) -> CallToolResult {
         let a = args.0;

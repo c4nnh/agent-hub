@@ -1,6 +1,6 @@
 use ah::{
     client::HubClient,
-    commands::{auth, channel, chat},
+    commands::{auth, channel, chat, wait},
     config::{self, Credentials},
 };
 use clap::{Parser, Subcommand};
@@ -38,6 +38,18 @@ enum Command {
         /// Folder to look up the channel binding for; default the current directory
         #[arg(long)]
         folder: Option<std::path::PathBuf>,
+    },
+    /// Block until a message from someone else arrives; print it as JSON lines and exit
+    Wait {
+        /// Only wait on this channel (default: every channel bound to the folder)
+        #[arg(long)]
+        channel: Option<String>,
+        /// Folder to look up the channel binding for; default the current directory
+        #[arg(long)]
+        folder: Option<std::path::PathBuf>,
+        /// Agent name whose own messages are ignored; default as for `ah mcp`
+        #[arg(long)]
+        name: Option<String>,
     },
 }
 
@@ -102,7 +114,9 @@ async fn main() {
     let result = run(cli, &dir).await;
     if let Err(e) = result {
         eprintln!("error: {e}");
-        std::process::exit(1);
+        // 2 = the feed is refused or the folder is unbound; retrying will not help.
+        let is_refusal = e.downcast_ref::<wait::Refusal>().is_some();
+        std::process::exit(if is_refusal { 2 } else { 1 });
     }
 }
 
@@ -122,6 +136,22 @@ async fn run(cli: Cli, dir: &std::path::Path) -> Result<(), Box<dyn std::error::
             .await
         }
         Command::Mcp { name, folder } => ah::mcp::run(dir, &cfg, name, folder).await,
+        Command::Wait {
+            channel,
+            folder,
+            name,
+        } => {
+            let creds = Credentials::load(dir)?.ok_or("not logged in; run `ah auth`")?;
+            let client = HubClient::new(cfg.hub_url.clone(), Some(creds.token));
+            let args = wait::WaitArgs {
+                folder,
+                channel,
+                name,
+            };
+            wait::run_wait(dir, &client, args, &mut out)
+                .await
+                .map_err(|e| e as Box<dyn std::error::Error>)
+        }
         Command::Logout => auth::run_logout(dir, &cfg, &mut out, &mut std::io::stderr()).await,
         Command::Chat { channel } => {
             let creds = Credentials::load(dir)?.ok_or("not logged in; run `ah auth`")?;

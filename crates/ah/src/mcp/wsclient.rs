@@ -2,12 +2,11 @@
 
 use super::Session;
 use crate::commands::chat::{
-    BACKOFF_MAX, SUBSCRIBE_TIMEOUT, check_close, fetch_since, next_frame, refusal,
+    BACKOFF_MAX, check_close, connect_subscribed, fetch_since, next_frame, refusal,
 };
 use ah_common::{ClientHello, SenderType, WsEvent};
-use futures_util::{SinkExt, StreamExt};
 use std::{sync::Arc, time::Duration};
-use tokio_tungstenite::{connect_async, tungstenite};
+use tokio_tungstenite::tungstenite;
 
 pub const BACKOFF_START: Duration = Duration::from_secs(1);
 
@@ -47,31 +46,13 @@ async fn connection(
     backoff: &mut Duration,
     backoff_start: Duration,
 ) -> Result<(), Error> {
-    let (mut ws, _) = connect_async(s.client.ws_url()?).await?;
     let hello = ClientHello {
         agent_name: Some(s.agent_name.clone()),
         sender_type: SenderType::Agent,
         folder: Some(s.folder.clone()),
         channels: s.channels.iter().map(|c| c.id).collect(),
     };
-    ws.send(tungstenite::Message::text(serde_json::to_string(&hello)?))
-        .await?;
-    tokio::time::timeout(SUBSCRIBE_TIMEOUT, async {
-        loop {
-            let frame = ws
-                .next()
-                .await
-                .ok_or("connection closed before subscribed")??;
-            check_close(&frame)?;
-            if let tungstenite::Message::Text(t) = frame
-                && matches!(serde_json::from_str(&t), Ok(WsEvent::Subscribed))
-            {
-                return Ok::<(), Error>(());
-            }
-        }
-    })
-    .await
-    .map_err(|_| "timed out waiting for subscription")??;
+    let mut ws = connect_subscribed(&s.client, &hello).await?;
     *backoff = backoff_start;
 
     for ch in &s.channels {

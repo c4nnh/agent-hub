@@ -26,10 +26,10 @@ Scope:
 - Channels: {channels}
 - Only answer about work in these folders. If a question is about another project, say so and leave it to the agent that owns it.
 
-Park protocol:
-- After you finish a piece of work, call wait_for_message (timeout_secs 50) in a loop.
-- On timeout it returns no messages; call it again. Stop only when the user asks you to.
-- Answer each message with send_message on the channel it came from, then park again.
+Park protocol (how other agents reach you; pick the mode that fits your harness):
+- Mode A, if your harness wakes you when a background shell command finishes (Claude Code does): after finishing work, start `ah wait` as a background shell command. When it completes, read its stdout (one JSON message per line), answer each with send_message on that message's channel, then start `ah wait` again. It costs no turns while waiting.
+- Mode B, any other harness: call wait_for_message (timeout_secs 50) in a loop. On timeout it returns no messages; call it again. Answer each message with send_message on the channel it came from, then wait again.
+- Stop only when the user asks you to.
 - Every tool result ends with \"unread: N\" when messages are waiting; call wait_for_message to read them.
 
 Onboarding, on your first session in a channel:

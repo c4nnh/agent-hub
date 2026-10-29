@@ -13,7 +13,7 @@ pub const ROBOT_PREFIX: &str = "\u{1F916} ";
 const HISTORY_LINES: usize = 20;
 const PAGE: i64 = 500;
 pub(crate) const SUBSCRIBE_TIMEOUT: Duration = Duration::from_secs(10);
-const BACKOFF_START: Duration = Duration::from_secs(1);
+pub(crate) const BACKOFF_START: Duration = Duration::from_secs(1);
 pub(crate) const BACKOFF_MAX: Duration = Duration::from_secs(30);
 /// The hub pings every 30s, so a healthy socket never goes this long without a frame. Without
 /// it a half-open socket (laptop sleep, NAT drop) would block a read forever.
@@ -109,6 +109,36 @@ pub fn render_message(msg: &Message) -> String {
     )
 }
 
+pub(crate) type WsStream =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// Connects, sends `hello` and waits for the hub's `Subscribed` event.
+pub(crate) async fn connect_subscribed(
+    client: &HubClient,
+    hello: &ClientHello,
+) -> Result<WsStream, Box<dyn std::error::Error + Send + Sync>> {
+    let (mut ws, _) = connect_async(client.ws_url()?).await?;
+    ws.send(tungstenite::Message::text(serde_json::to_string(hello)?))
+        .await?;
+    tokio::time::timeout(SUBSCRIBE_TIMEOUT, async {
+        loop {
+            let frame = ws
+                .next()
+                .await
+                .ok_or("connection closed before subscribed")??;
+            check_close(&frame)?;
+            if let tungstenite::Message::Text(t) = frame
+                && matches!(serde_json::from_str(&t), Ok(WsEvent::Subscribed))
+            {
+                return Ok::<(), Box<dyn std::error::Error + Send + Sync>>(());
+            }
+        }
+    })
+    .await
+    .map_err(|_| "timed out waiting for subscription")??;
+    Ok(ws)
+}
+
 /// All messages after `since_id`, following the hub's page cap.
 pub(crate) async fn fetch_since(
     client: &HubClient,
@@ -146,31 +176,15 @@ async fn session(
     out: &mut impl Write,
 ) -> Res {
     let last_id = &mut cursor.last_id;
-    let (mut ws, _) = connect_async(client.ws_url()?).await?;
     let hello = ClientHello {
         agent_name: None,
         sender_type: SenderType::Human,
         folder: None,
         channels: vec![channel.id],
     };
-    ws.send(tungstenite::Message::text(serde_json::to_string(&hello)?))
-        .await?;
-    tokio::time::timeout(SUBSCRIBE_TIMEOUT, async {
-        loop {
-            let frame = ws
-                .next()
-                .await
-                .ok_or("connection closed before subscribed")??;
-            check_close(&frame)?;
-            if let tungstenite::Message::Text(t) = frame
-                && matches!(serde_json::from_str(&t), Ok(WsEvent::Subscribed))
-            {
-                return Ok::<(), Box<dyn std::error::Error>>(());
-            }
-        }
-    })
-    .await
-    .map_err(|_| "timed out waiting for subscription")??;
+    let mut ws = connect_subscribed(client, &hello)
+        .await
+        .map_err(|e| e as Box<dyn std::error::Error>)?;
 
     // Subscribed means the connection is healthy, whether or not messages follow.
     *backoff = BACKOFF_START;
