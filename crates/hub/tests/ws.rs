@@ -47,7 +47,7 @@ async fn serve_with(pool: PgPool, registry: Registry) -> Server {
         public_url: "http://hub.test".into(),
         google_base_url: None,
     };
-    let mut state = AppState::new(pool, cfg);
+    let mut state = AppState::new(pool, cfg, std::sync::Arc::new(ah_hub::embed::HashEmbedder));
     state.registry = registry.clone();
     let app = app(state);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -41,7 +41,11 @@ async fn hub(pool: PgPool) -> Router {
         public_url: "http://hub.test".into(),
         google_base_url: Some(fake_google().await),
     };
-    app(AppState::new(pool, cfg))
+    app(AppState::new(
+        pool,
+        cfg,
+        std::sync::Arc::new(ah_hub::embed::HashEmbedder),
+    ))
 }
 
 async fn call(

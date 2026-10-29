@@ -1,4 +1,4 @@
-use crate::{auth, channels, messages, state::AppState, ws};
+use crate::{auth, channels, context, messages, state::AppState, ws};
 use axum::{
     Router,
     routing::{get, post},
@@ -18,6 +18,12 @@ pub fn app(state: AppState) -> Router {
             get(messages::list).post(messages::post),
         )
         .route("/api/channels/{id}/agents", get(ws::agents))
+        .route(
+            "/api/channels/{id}/context",
+            get(context::list).post(context::upsert),
+        )
+        .route("/api/channels/{id}/context/search", post(context::search))
+        .route("/api/context/{id}", get(context::get))
         .route("/api/ws", get(ws::handler))
         .route("/api/invitations", get(channels::list_invitations))
         .route("/api/invitations/{id}/respond", post(channels::respond))

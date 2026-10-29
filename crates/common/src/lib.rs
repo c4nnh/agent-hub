@@ -107,3 +107,38 @@ pub enum WsEvent {
         message: Message,
     },
 }
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContextEntry {
+    pub id: uuid::Uuid,
+    pub channel_id: uuid::Uuid,
+    pub title: String,
+    pub body: String,
+    pub version: i32,
+    pub updated_by: String,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContextEntrySummary {
+    pub id: uuid::Uuid,
+    pub title: String,
+    pub version: i32,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpsertContext {
+    #[serde(default)]
+    pub id: Option<uuid::Uuid>,
+    pub title: String,
+    pub body: String,
+    #[serde(default)]
+    pub base_version: Option<i32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContextHit {
+    pub entry: ContextEntrySummary,
+    pub score: f32,
+}
