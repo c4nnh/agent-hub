@@ -13,6 +13,9 @@ use axum::{
 use sqlx::PgPool;
 use tower::ServiceExt;
 
+const C1: &str = "11111111-1111-1111-1111-111111111111";
+const C2: &str = "22222222-2222-2222-2222-222222222222";
+
 async fn fake_google() -> String {
     let router = Router::new()
         .route(
@@ -101,14 +104,14 @@ async fn login(app: &Router, code: &str) -> AuthPollResponse {
 #[sqlx::test(migrations = "./migrations")]
 async fn cli_flow_issues_token(pool: PgPool) {
     let app = hub(pool).await;
-    let r = login(&app, "code1").await;
+    let r = login(&app, C1).await;
     assert_eq!(r.email, "a@b.co");
     assert_eq!(r.token.len(), 43);
     // The token is handed out once.
     let (s, _) = call(
         &app,
         Method::GET,
-        "/api/auth/cli/poll?code=code1",
+        &format!("/api/auth/cli/poll?code={C1}"),
         None,
         None,
     )
@@ -154,7 +157,7 @@ async fn bearer_rejects_unknown_token(pool: PgPool) {
 #[sqlx::test(migrations = "./migrations")]
 async fn logout_revokes_token(pool: PgPool) {
     let app = hub(pool).await;
-    let t = login(&app, "code2").await.token;
+    let t = login(&app, C2).await.token;
     let (s, body) = call(&app, Method::GET, "/api/me", Some(&t), None).await;
     assert_eq!(s, StatusCode::OK);
     let me: MeResponse = serde_json::from_slice(&body).unwrap();
@@ -166,4 +169,94 @@ async fn logout_revokes_token(pool: PgPool) {
     assert_eq!(s, StatusCode::NO_CONTENT);
     let (s, _) = call(&app, Method::GET, "/api/me", Some(&t), None).await;
     assert_eq!(s, StatusCode::UNAUTHORIZED);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn short_code_rejected_400(pool: PgPool) {
+    let app = hub(pool).await;
+    let short = format!(r#"{{"code":"{}"}}"#, "a".repeat(31));
+    let (s, _) = call(
+        &app,
+        Method::POST,
+        "/api/auth/cli/start",
+        None,
+        Some(&short),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let ok = format!(r#"{{"code":"{}"}}"#, "a".repeat(32));
+    let (s, _) = call(&app, Method::POST, "/api/auth/cli/start", None, Some(&ok)).await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn expired_auth_request_poll_204_and_token_revoked(pool: PgPool) {
+    let app = hub(pool.clone()).await;
+    // Completed login whose token was never polled.
+    let (s, _) = call(
+        &app,
+        Method::POST,
+        "/api/auth/cli/start",
+        None,
+        Some(&format!(r#"{{"code":"{C1}"}}"#)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (s, _) = call(
+        &app,
+        Method::GET,
+        &format!("/auth/callback?code=gc&state={C1}"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let tokens: i64 = sqlx::query_scalar("select count(*) from tokens")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(tokens, 1);
+    // Pending request that expires before the callback.
+    let (s, _) = call(
+        &app,
+        Method::POST,
+        "/api/auth/cli/start",
+        None,
+        Some(&format!(r#"{{"code":"{C2}"}}"#)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    sqlx::query("update auth_requests set created_at = now() - interval '11 minutes'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let (s, _) = call(
+        &app,
+        Method::GET,
+        &format!("/auth/callback?code=gc&state={C2}"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (s, _) = call(
+        &app,
+        Method::GET,
+        &format!("/api/auth/cli/poll?code={C1}"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let tokens: i64 = sqlx::query_scalar("select count(*) from tokens")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(tokens, 0);
+    let reqs: i64 = sqlx::query_scalar("select count(*) from auth_requests")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(reqs, 0);
 }

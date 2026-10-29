@@ -97,7 +97,7 @@ pub async fn cli_start(
     State(s): State<AppState>,
     Json(body): Json<StartBody>,
 ) -> Result<StatusCode, StatusCode> {
-    if body.code.is_empty() || body.code.len() > 128 {
+    if body.code.len() < 32 || body.code.len() > 128 {
         tracing::warn!(len = body.code.len(), "invalid cli auth code");
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -107,6 +107,22 @@ pub async fn cli_start(
         .await
         .map_err(internal)?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Deletes auth requests older than 10 minutes and revokes any token they held.
+async fn sweep_expired(pool: &PgPool) -> Result<(), StatusCode> {
+    sqlx::query(
+        "with expired as (
+             delete from auth_requests where created_at < now() - interval '10 minutes' returning token
+         )
+         delete from tokens where token_hash in (
+             select encode(sha256(convert_to(token, 'UTF8')), 'hex') from expired where token is not null
+         )",
+    )
+    .execute(pool)
+    .await
+    .map_err(internal)?;
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -177,6 +193,7 @@ pub async fn google_callback(
     State(s): State<AppState>,
     Query(q): Query<CallbackQuery>,
 ) -> Result<&'static str, StatusCode> {
+    sweep_expired(&s.pool).await?;
     let pending: Option<bool> =
         sqlx::query_scalar("select token is null from auth_requests where code = $1")
             .bind(&q.state)
@@ -216,6 +233,7 @@ pub async fn cli_poll(
     State(s): State<AppState>,
     Query(q): Query<CodeQuery>,
 ) -> Result<Response, StatusCode> {
+    sweep_expired(&s.pool).await?;
     let token: Option<String> = sqlx::query_scalar(
         "delete from auth_requests where code = $1 and token is not null returning token",
     )
