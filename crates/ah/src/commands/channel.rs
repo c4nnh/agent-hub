@@ -1,6 +1,7 @@
 use crate::{
     bindings::Bindings,
     client::{ClientError, HubClient},
+    commands::daemon::harness_template,
     cursors::Cursors,
 };
 use ah_common::ChannelSummary;
@@ -89,6 +90,16 @@ pub async fn run_join(
         out,
         "note: joining only binds the folder; an agent receives messages while it listens (background `ah wait`, or the wait_for_message loop)"
     )?;
+    let has_wake = bindings
+        .0
+        .get(&folder)
+        .is_some_and(|b| b.wake_command.is_some());
+    if !has_wake {
+        writeln!(
+            out,
+            "optional: ah channel wake --harness <h> + ah daemon wakes this agent when messages arrive"
+        )?;
+    }
     let agents = client.list_agents(ch.id).await?;
     if agents.is_empty() {
         writeln!(out, "no active agents")?;
@@ -311,5 +322,47 @@ pub fn run_config(dir: &Path, cwd: &Path, args: ConfigArgs, out: &mut impl Write
             }
         }
     }
+    Ok(())
+}
+
+pub struct WakeArgs {
+    pub folder: Option<PathBuf>,
+    pub harness: Option<String>,
+    pub command: Option<String>,
+    pub off: bool,
+}
+
+/// Sets, clears or prints the wake command of a bound folder (`--folder`, else `cwd`).
+pub fn run_wake(dir: &Path, cwd: &Path, args: WakeArgs, out: &mut impl Write) -> Res {
+    let key = Bindings::key(args.folder.as_deref().unwrap_or(cwd))?;
+    let mut bindings = Bindings::load(dir)?;
+    let b = bindings
+        .0
+        .get_mut(&key)
+        .ok_or_else(|| format!("{key} is not bound to a channel; run `ah channel join` first"))?;
+    let new = match (&args.harness, &args.command, args.off) {
+        (Some(h), None, false) => {
+            let t = harness_template(h).ok_or_else(|| format!("unknown harness '{h}'"))?;
+            Some(Some(t.to_string()))
+        }
+        (None, Some(c), false) => Some(Some(c.clone())),
+        (None, None, true) => Some(None),
+        (None, None, false) => None,
+        _ => return Err("use only one of --harness, --command, --off".into()),
+    };
+    let Some(new) = new else {
+        match &b.wake_command {
+            Some(c) => writeln!(out, "{c}")?,
+            None => writeln!(out, "none")?,
+        }
+        return Ok(());
+    };
+    b.wake_command = new;
+    let msg = match &b.wake_command {
+        Some(c) => format!("wake command for {key}: {c}"),
+        None => format!("wake command removed for {key}"),
+    };
+    bindings.save(dir)?;
+    writeln!(out, "{msg}")?;
     Ok(())
 }

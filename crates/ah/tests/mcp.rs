@@ -102,6 +102,7 @@ async fn harness_in(
         Binding {
             channel_ids: channels.iter().map(|c| c.id).collect(),
             extra_folders: vec!["/srv/shared".into()],
+            ..Default::default()
         },
     );
     let session = tokio::time::timeout(

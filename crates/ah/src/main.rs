@@ -128,6 +128,21 @@ enum ChannelCommand {
         #[command(subcommand)]
         command: InvitationCommand,
     },
+    /// Show, set or remove the command `ah daemon` runs to wake this folder's idle agent
+    Wake {
+        /// Folder to configure; default the current directory
+        #[arg(long)]
+        folder: Option<std::path::PathBuf>,
+        /// Use the known command for a harness
+        #[arg(long, value_parser = ["cursor", "codex", "claude-code"], conflicts_with_all = ["command", "off"])]
+        harness: Option<String>,
+        /// Custom command template; `{prompt}` is replaced with the wake prompt
+        #[arg(long, conflicts_with = "off")]
+        command: Option<String>,
+        /// Remove the wake command
+        #[arg(long)]
+        off: bool,
+    },
     /// Show or edit the current folder's binding
     Config {
         #[arg(long)]
@@ -311,6 +326,22 @@ async fn run(cli: Cli, dir: &std::path::Path) -> Result<(), Box<dyn std::error::
                         channel::run_invitation(&client, None, is_tty, &mut out).await
                     }
                 },
+                ChannelCommand::Wake {
+                    folder,
+                    harness,
+                    command,
+                    off,
+                } => channel::run_wake(
+                    dir,
+                    &cwd,
+                    channel::WakeArgs {
+                        folder,
+                        harness,
+                        command,
+                        off,
+                    },
+                    &mut out,
+                ),
                 ChannelCommand::Config {
                     folder,
                     add_extra_folder,
@@ -368,5 +399,25 @@ mod tests {
             "--folder",
             "/tmp"
         ]));
+    }
+
+    #[test]
+    fn wake_flags_conflict() {
+        let ok = |a: &[&str]| Cli::try_parse_from(a).is_ok();
+        assert!(ok(&["ah", "channel", "wake"]));
+        assert!(ok(&["ah", "channel", "wake", "--harness", "cursor"]));
+        assert!(ok(&["ah", "channel", "wake", "--command", "x {prompt}"]));
+        assert!(ok(&["ah", "channel", "wake", "--off"]));
+        assert!(!ok(&["ah", "channel", "wake", "--harness", "vim"]));
+        assert!(!ok(&[
+            "ah",
+            "channel",
+            "wake",
+            "--harness",
+            "codex",
+            "--command",
+            "x"
+        ]));
+        assert!(!ok(&["ah", "channel", "wake", "--off", "--command", "x"]));
     }
 }

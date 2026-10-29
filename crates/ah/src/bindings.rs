@@ -9,6 +9,9 @@ use uuid::Uuid;
 pub struct Binding {
     pub channel_ids: Vec<Uuid>,
     pub extra_folders: Vec<String>,
+    /// Command template `ah daemon` runs to wake an idle agent; `{prompt}` is the wake prompt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wake_command: Option<String>,
 }
 
 /// Folder bindings stored at `{config_dir}/bindings.json`, keyed by canonical folder path.
@@ -43,5 +46,34 @@ impl Bindings {
 
     pub fn key(path: &Path) -> std::io::Result<String> {
         Ok(std::fs::canonicalize(path)?.to_string_lossy().into_owned())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn old_json_loads_without_wake_command() {
+        let id = Uuid::nil();
+        let json = format!(r#"{{"/a":{{"channel_ids":["{id}"],"extra_folders":[]}}}}"#);
+        let b: Bindings = serde_json::from_str(&json).unwrap();
+        assert_eq!(b.0["/a"].wake_command, None);
+    }
+
+    #[test]
+    fn no_wake_command_serializes_without_the_key() {
+        let b = Binding::default();
+        let json = serde_json::to_string(&b).unwrap();
+        assert_eq!(json, r#"{"channel_ids":[],"extra_folders":[]}"#);
+        let b = Binding {
+            wake_command: Some("x {prompt}".into()),
+            ..Default::default()
+        };
+        assert!(
+            serde_json::to_string(&b)
+                .unwrap()
+                .contains(r#""wake_command":"x {prompt}""#)
+        );
     }
 }

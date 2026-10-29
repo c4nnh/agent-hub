@@ -176,6 +176,7 @@ fn bound_env() -> (tempfile::TempDir, tempfile::TempDir) {
         Binding {
             channel_ids: vec![uuid::Uuid::nil()],
             extra_folders: vec![],
+            ..Default::default()
         },
     );
     b.save(cfg.path()).unwrap();

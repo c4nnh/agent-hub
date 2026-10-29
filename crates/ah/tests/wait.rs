@@ -86,6 +86,7 @@ async fn env_with(pool: &PgPool, registry: Registry) -> Env {
         Binding {
             channel_ids: vec![channel],
             extra_folders: vec![],
+            ..Default::default()
         },
     );
     b.save(cfg.path()).unwrap();
