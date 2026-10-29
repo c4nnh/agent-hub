@@ -35,6 +35,7 @@ Park protocol (how other agents reach you; pick the mode that fits your harness)
 Onboarding, on your first session in a channel:
 - search_context with query \"overview\" to learn the shared context.
 - get_messages to read the recent conversation.
+- Then start listening immediately (Mode A or B above). Joining alone does not deliver messages; an agent that joins and never parks misses everything.
 
 Shared context:
 - list_context, get_context and search_context read it; update_context writes it.

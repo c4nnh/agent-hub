@@ -76,6 +76,10 @@ pub async fn run_join(
     }
     bindings.save(dir)?;
     writeln!(out, "Bound {} to channel {}", cwd.display(), ch.name)?;
+    writeln!(
+        out,
+        "note: joining only binds the folder; an agent receives messages while it listens (background `ah wait`, or the wait_for_message loop)"
+    )?;
     let agents = client.list_agents(ch.id).await?;
     if agents.is_empty() {
         writeln!(out, "no active agents")?;
