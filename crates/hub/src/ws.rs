@@ -28,6 +28,8 @@ use uuid::Uuid;
 
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 const QUEUE_LEN: usize = 256;
+const PING_EVERY: Duration = Duration::from_secs(30);
+const SEND_TIMEOUT: Duration = Duration::from_secs(10);
 const CLOSE_POLICY: u16 = 1008;
 
 struct Subscriber {
@@ -37,13 +39,31 @@ struct Subscriber {
 }
 
 /// channel_id -> live subscribers. Shared by the POST handler (publish) and the WS tasks.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct Registry {
+    queue_len: usize,
+    ping_every: Duration,
     channels: Arc<Mutex<HashMap<Uuid, Vec<Subscriber>>>>,
     next_conn: Arc<AtomicU64>,
 }
 
+impl Default for Registry {
+    fn default() -> Self {
+        Self::with_tuning(QUEUE_LEN, PING_EVERY)
+    }
+}
+
 impl Registry {
+    /// Per-connection queue length and ping interval; tests shrink both.
+    pub fn with_tuning(queue_len: usize, ping_every: Duration) -> Self {
+        Self {
+            queue_len,
+            ping_every,
+            channels: Default::default(),
+            next_conn: Default::default(),
+        }
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<Uuid, Vec<Subscriber>>> {
         self.channels.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -68,7 +88,10 @@ impl Registry {
     }
 
     fn unregister(&self, conn_id: u64) {
-        let mut map = self.lock();
+        Self::unregister_locked(&mut self.lock(), conn_id);
+    }
+
+    fn unregister_locked(map: &mut HashMap<Uuid, Vec<Subscriber>>, conn_id: u64) {
         map.retain(|_, subs| {
             subs.retain(|s| s.conn_id != conn_id);
             !subs.is_empty()
@@ -87,16 +110,22 @@ impl Registry {
             }
         };
         let mut map = self.lock();
+        let mut evict = Vec::new();
         if let Some(subs) = map.get_mut(&channel_id) {
-            // ponytail: a subscriber whose queue is full misses the message; it can catch up via GET since_id.
             subs.retain(|s| match s.tx.try_send(json.clone()) {
                 Err(mpsc::error::TrySendError::Closed(_)) => false,
                 Err(mpsc::error::TrySendError::Full(_)) => {
-                    tracing::warn!(%channel_id, conn_id = s.conn_id, "ws queue full, dropping event");
+                    evict.push(s.conn_id);
                     true
                 }
                 Ok(()) => true,
             });
+        }
+        // A subscriber that cannot keep up is disconnected so it reconnects and
+        // catches up via GET since_id; silently skipping events would be undetectable.
+        for conn_id in evict {
+            tracing::warn!(%channel_id, conn_id, "ws queue full, evicting subscriber");
+            Self::unregister_locked(&mut map, conn_id);
         }
     }
 
@@ -199,23 +228,58 @@ async fn run(mut socket: WebSocket, s: AppState, user: User) {
         folder: hello.folder.clone(),
         connected_at: Utc::now(),
     });
-    let (tx, mut rx) = mpsc::channel::<Arc<str>>(QUEUE_LEN);
+    let (tx, mut rx) = mpsc::channel::<Arc<str>>(s.registry.queue_len);
     let conn_id = s.registry.register(&hello.channels, &tx, presence);
     drop(tx);
+    serve_connection(&mut socket, &mut rx, s.registry.ping_every).await;
+    s.registry.unregister(conn_id);
+}
+
+async fn send(socket: &mut WebSocket, frame: WsMessage) -> bool {
+    let sent = tokio::time::timeout(SEND_TIMEOUT, socket.send(frame)).await;
+    matches!(sent, Ok(Ok(())))
+}
+
+async fn serve_connection(
+    socket: &mut WebSocket,
+    rx: &mut mpsc::Receiver<Arc<str>>,
+    ping_every: Duration,
+) {
+    let subscribed = match serde_json::to_string(&WsEvent::Subscribed) {
+        Ok(json) => json,
+        Err(error) => {
+            tracing::error!(%error, "ws event serialization failed");
+            return;
+        }
+    };
+    if !send(socket, WsMessage::Text(subscribed.into())).await {
+        return;
+    }
+    let mut ticker = tokio::time::interval(ping_every);
+    ticker.tick().await;
+    let mut last_seen = tokio::time::Instant::now();
     loop {
         tokio::select! {
             event = rx.recv() => {
                 let Some(event) = event else { break };
-                if socket.send(WsMessage::Text((*event).into())).await.is_err() {
+                if !send(socket, WsMessage::Text((*event).into())).await {
+                    break;
+                }
+            }
+            _ = ticker.tick() => {
+                if last_seen.elapsed() > ping_every * 2 {
+                    tracing::warn!("ws peer silent for two ping intervals, closing");
+                    break;
+                }
+                if !send(socket, WsMessage::Ping(Vec::new().into())).await {
                     break;
                 }
             }
             incoming = socket.recv() => match incoming {
-                // Push-only: anything after hello is ignored until the peer closes.
+                // Push-only: anything after hello only proves the peer is alive.
                 Some(Ok(WsMessage::Close(_))) | Some(Err(_)) | None => break,
-                Some(Ok(_)) => {}
+                Some(Ok(_)) => last_seen = tokio::time::Instant::now(),
             },
         }
     }
-    s.registry.unregister(conn_id);
 }

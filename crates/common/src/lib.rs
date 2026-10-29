@@ -101,5 +101,9 @@ pub struct ClientHello {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WsEvent {
-    Message { message: Message },
+    /// Sent once, right after the hub registered the connection's subscriptions.
+    Subscribed,
+    Message {
+        message: Message,
+    },
 }

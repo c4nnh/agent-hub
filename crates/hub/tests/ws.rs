@@ -4,6 +4,7 @@ use ah_hub::{
     config::{HubConfig, HubMode},
     routes::app,
     state::AppState,
+    ws::Registry,
 };
 use axum::{
     Router,
@@ -22,6 +23,7 @@ const WAIT: Duration = Duration::from_secs(5);
 
 struct Server {
     app: Router,
+    registry: Registry,
     addr: std::net::SocketAddr,
     task: JoinHandle<()>,
 }
@@ -33,6 +35,10 @@ impl Drop for Server {
 }
 
 async fn serve(pool: PgPool) -> Server {
+    serve_with(pool, Registry::default()).await
+}
+
+async fn serve_with(pool: PgPool, registry: Registry) -> Server {
     let cfg = HubConfig {
         database_url: String::new(),
         hub_mode: HubMode::Open,
@@ -41,14 +47,21 @@ async fn serve(pool: PgPool) -> Server {
         public_url: "http://hub.test".into(),
         google_base_url: None,
     };
-    let app = app(AppState::new(pool, cfg));
+    let mut state = AppState::new(pool, cfg);
+    state.registry = registry.clone();
+    let app = app(state);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let router = app.clone();
     let task = tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });
-    Server { app, addr, task }
+    Server {
+        app,
+        registry,
+        addr,
+        task,
+    }
 }
 
 async fn user(pool: &PgPool, email: &str) -> String {
@@ -138,6 +151,20 @@ async fn connect(server: &Server, token: &str) -> Result<Client, tungstenite::Er
     connect_async(url).await.map(|(ws, _)| ws)
 }
 
+/// Next text frame, skipping pings.
+async fn next_text(ws: &mut Client) -> String {
+    loop {
+        let frame = timeout(WAIT, ws.next()).await.unwrap().unwrap().unwrap();
+        if let tungstenite::Message::Text(text) = frame {
+            return text.to_string();
+        }
+    }
+}
+
+async fn next_event(ws: &mut Client) -> WsEvent {
+    serde_json::from_str(&next_text(ws).await).unwrap()
+}
+
 async fn hello(ws: &mut Client, name: Option<&str>, folder: Option<&str>, channels: Vec<Uuid>) {
     let hello = ClientHello {
         agent_name: name.map(str::to_string),
@@ -160,8 +187,7 @@ async fn subscriber_receives_posted_message(pool: PgPool) {
     let channel = new_channel(&server.app, &token).await;
     let mut ws = connect(&server, &token).await.unwrap();
     hello(&mut ws, Some("bot"), None, vec![channel]).await;
-    // Presence is registered after the subscription, so it is a safe readiness signal.
-    wait_agents(&server.app, &token, channel, 1).await;
+    assert_eq!(next_event(&mut ws).await, WsEvent::Subscribed);
 
     let body = serde_json::json!({
         "body": "Xin chào", "sender_type": "human", "sender_name": "alice", "mentions": ["bot"]
@@ -177,8 +203,7 @@ async fn subscriber_receives_posted_message(pool: PgPool) {
     assert_eq!(status, StatusCode::CREATED);
     let posted: Message = serde_json::from_slice(&posted).unwrap();
 
-    let frame = timeout(WAIT, ws.next()).await.unwrap().unwrap().unwrap();
-    let text = frame.into_text().unwrap();
+    let text = next_text(&mut ws).await;
     let json: serde_json::Value = serde_json::from_str(&text).unwrap();
     assert_eq!(json["type"], "message");
     assert_eq!(json["message"]["body"], "Xin chào");
@@ -258,4 +283,73 @@ async fn hello_for_foreign_channel_closes_with_policy_violation(pool: PgPool) {
         other => panic!("expected close frame, got {other:?}"),
     }
     assert!(agents(&server.app, &owner, channel).await.is_empty());
+}
+
+fn message(channel: Uuid, id: i64) -> Message {
+    Message {
+        id,
+        channel_id: channel,
+        sender_type: SenderType::Human,
+        sender_name: "alice".into(),
+        body: "x".into(),
+        reply_to: None,
+        mentions: vec![],
+        created_at: chrono::Utc::now(),
+    }
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn subscribed_json_shape(pool: PgPool) {
+    let server = serve(pool.clone()).await;
+    let token = user(&pool, "a@x.io").await;
+    let mut ws = connect(&server, &token).await.unwrap();
+    hello(&mut ws, None, None, vec![]).await;
+    assert_eq!(next_text(&mut ws).await, r#"{"type":"subscribed"}"#);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn full_queue_evicts_subscriber(pool: PgPool) {
+    let registry = Registry::with_tuning(1, Duration::from_secs(30));
+    let server = serve_with(pool.clone(), registry).await;
+    let token = user(&pool, "a@x.io").await;
+    let channel = new_channel(&server.app, &token).await;
+    let mut ws = connect(&server, &token).await.unwrap();
+    hello(&mut ws, Some("bot"), None, vec![channel]).await;
+    assert_eq!(next_event(&mut ws).await, WsEvent::Subscribed);
+
+    // No await between publishes, so the capacity-1 queue overflows on the second.
+    for id in 1..=3 {
+        server.registry.publish(channel, &message(channel, id));
+    }
+    // The stream ends (close or EOF) instead of silently skipping events.
+    timeout(WAIT, async {
+        while ws.next().await.is_some_and(|f| f.is_ok()) {}
+    })
+    .await
+    .expect("connection was not closed");
+    wait_agents(&server.app, &token, channel, 0).await;
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn server_pings_and_drops_silent_peer(pool: PgPool) {
+    let registry = Registry::with_tuning(8, Duration::from_millis(100));
+    let server = serve_with(pool.clone(), registry).await;
+    let token = user(&pool, "a@x.io").await;
+    let channel = new_channel(&server.app, &token).await;
+    let mut ws = connect(&server, &token).await.unwrap();
+    hello(&mut ws, Some("bot"), None, vec![channel]).await;
+    assert_eq!(next_event(&mut ws).await, WsEvent::Subscribed);
+    let ping = timeout(WAIT, async {
+        loop {
+            if let tungstenite::Message::Ping(_) = ws.next().await.unwrap().unwrap() {
+                return;
+            }
+        }
+    })
+    .await;
+    assert!(ping.is_ok(), "no ping received");
+
+    // The client no longer reads, so it never answers: the hub must drop it.
+    wait_agents(&server.app, &token, channel, 0).await;
+    drop(ws);
 }
