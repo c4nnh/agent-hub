@@ -2,3 +2,21 @@
 name = "ah"
 version.workspace = true
 edition.workspace = true
+
+[dependencies]
+ah-common = { path = "../common" }
+clap = { version = "4", features = ["derive"] }
+dirs = "6"
+open = "5"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+ah-hub = { path = "../hub" }
+axum = "0.8"
+sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio", "migrate", "macros"] }
+tempfile = "3"
