@@ -135,6 +135,6 @@ async fn incoming_message_printed(pool: PgPool) {
     };
     tokio::select! {
         r = subscribe_loop(&a, &ch, &mut writer) => panic!("loop ended: {r:?}"),
-        _ = tokio::time::timeout(Duration::from_secs(10), scenario) => {}
+        r = tokio::time::timeout(Duration::from_secs(10), scenario) => r.expect("timed out")
     }
 }

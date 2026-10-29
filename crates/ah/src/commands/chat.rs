@@ -57,6 +57,7 @@ async fn session(
     client: &HubClient,
     channel: &ChannelSummary,
     last_id: &mut i64,
+    backoff: &mut Duration,
     out: &mut impl Write,
 ) -> Res {
     let (mut ws, _) = connect_async(client.ws_url()?).await?;
@@ -84,6 +85,8 @@ async fn session(
     .await
     .map_err(|_| "timed out waiting for subscription")??;
 
+    // Subscribed means the connection is healthy, whether or not messages follow.
+    *backoff = BACKOFF_START;
     let is_first = *last_id == 0;
     let missed = fetch_since(client, channel, *last_id).await?;
     let skip = if is_first {
@@ -126,17 +129,12 @@ pub async fn subscribe_loop(
     let mut last_id = 0;
     let mut backoff = BACKOFF_START;
     loop {
-        let last_before = last_id;
-        let result = session(client, channel, &mut last_id, out).await;
+        let result = session(client, channel, &mut last_id, &mut backoff, out).await;
         if let Err(e) = &result
             && let Some(crate::client::ClientError::Status { status, .. }) = e.downcast_ref()
             && (400..500).contains(status)
         {
             return result;
-        }
-        // Progress means the connection worked; start backoff over.
-        if last_id != last_before {
-            backoff = BACKOFF_START;
         }
         match result {
             Ok(()) => eprintln!("connection closed; reconnecting in {backoff:?}"),
