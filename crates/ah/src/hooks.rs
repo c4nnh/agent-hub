@@ -22,8 +22,6 @@ use uuid::Uuid;
 
 pub const STOP_CMD: &str = "ah hook stop";
 pub const SESSION_START_CMD: &str = "ah hook session-start";
-/// Any hook command containing this is ours, wherever `ah` lives.
-const MARKER: &str = "ah hook ";
 const EVENTS: [(&str, &str); 2] = [("Stop", STOP_CMD), ("SessionStart", SESSION_START_CMD)];
 const NET_TIMEOUT: Duration = Duration::from_secs(2);
 const ANNOUNCE: &str = "new message from <sender> in #<channel>: <body>";
@@ -106,10 +104,19 @@ fn save(path: &Path, v: &Value) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Ours: a command whose program is `ah` (bare, or a path ending in `ah` / `ah.exe`) and
+/// whose first argument is `hook`, wherever `ah` lives.
 fn is_ours(hook: &Value) -> bool {
-    hook.get("command")
-        .and_then(Value::as_str)
-        .is_some_and(|c| c.contains(MARKER))
+    let Some(command) = hook.get("command").and_then(Value::as_str) else {
+        return false;
+    };
+    let mut words = command.split_whitespace();
+    let program = words
+        .next()
+        .unwrap_or("")
+        .trim_matches(|c| c == '"' || c == '\'');
+    let name = program.rsplit(['/', '\\']).next().unwrap_or("");
+    (name == "ah" || name == "ah.exe") && words.next() == Some("hook")
 }
 
 fn group_hooks(group: &Value) -> &[Value] {
@@ -119,8 +126,8 @@ fn group_hooks(group: &Value) -> &[Value] {
         .map_or(&[], Vec::as_slice)
 }
 
-/// Adds the two matcher-less entries to `{claude_dir}/settings.json` where no `ah hook `
-/// command exists yet. Never removes or reorders anything; leaves the file untouched when
+/// Adds the two matcher-less entries to `{claude_dir}/settings.json` where no `ah hook ...`
+/// command (see `is_ours`) exists yet. Never removes or reorders anything; leaves the file untouched when
 /// nothing is missing or when it does not parse.
 pub fn ensure_hooks(claude_dir: Option<&Path>) -> std::io::Result<HookStatus> {
     let Some(claude_dir) = claude_dir else {
@@ -174,7 +181,7 @@ pub fn ensure_and_report(claude_dir: Option<&Path>, out: &mut impl Write) -> std
     }
 }
 
-/// Removes every hook whose command contains `ah hook `, plus the groups, event lists and
+/// Removes every `ah hook ...` command (see `is_ours`), plus the groups, event lists and
 /// `hooks` object that this leaves empty. Returns the removed commands.
 pub fn uninstall(claude_dir: Option<&Path>) -> std::io::Result<Vec<String>> {
     let Some(claude_dir) = claude_dir else {
@@ -395,6 +402,9 @@ pub async fn run_hook(dir: &Path, event: Event) {
         let _ = stdout.write_all(&buf);
         let _ = stdout.flush();
     }
+    // A timed-out request can leave a blocking DNS lookup that runtime shutdown would wait
+    // for; exit now so the hook never outlives its decision.
+    std::process::exit(0);
 }
 
 #[cfg(test)]

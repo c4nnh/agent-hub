@@ -48,7 +48,10 @@ fn install_preserves_unrelated_entries_and_order() {
         "zeta": 1,
         "model": "opus",
         "hooks": {
-            "Stop": [{"hooks": [{"type": "command", "command": "say done"}]}],
+            "Stop": [
+                {"hooks": [{"type": "command", "command": "say done"}]},
+                {"hooks": [{"type": "command", "command": "yeah hook x"}]}
+            ],
             "PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "lint"}]}]
         },
         "alpha": true
@@ -65,7 +68,10 @@ fn install_preserves_unrelated_entries_and_order() {
     let v = settings(claude.path());
     let keys: Vec<_> = v.as_object().unwrap().keys().cloned().collect();
     assert_eq!(keys, vec!["zeta", "model", "hooks", "alpha"]);
-    assert_eq!(commands(&v, "Stop"), vec!["say done", "ah hook stop"]);
+    assert_eq!(
+        commands(&v, "Stop"),
+        vec!["say done", "yeah hook x", "ah hook stop"]
+    );
     assert_eq!(v["hooks"]["PreToolUse"], original["hooks"]["PreToolUse"]);
 
     // Uninstall removes only ours and restores the original document.

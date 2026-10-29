@@ -132,8 +132,15 @@ async fn login(hub: &str, dir: &Path, claude: Option<&Path>) -> String {
 async fn auth_flow_saves_credentials(pool: PgPool) {
     let hub = spawn_hub(pool).await;
     let tmp = tempfile::tempdir().unwrap();
-    let text = login(&hub, tmp.path(), None).await;
+    let claude = tempfile::tempdir().unwrap();
+    let text = login(&hub, tmp.path(), Some(claude.path())).await;
     assert!(text.contains("Logged in as a@b.co"), "{text}");
+    assert!(text.contains("claude code hooks installed"), "{text}");
+    let settings = std::fs::read_to_string(claude.path().join("settings.json")).unwrap();
+    assert!(
+        settings.contains("\"ah hook stop\"") && settings.contains("\"ah hook session-start\""),
+        "{settings}"
+    );
 
     let creds = Credentials::load(tmp.path()).unwrap().unwrap();
     assert_eq!(creds.email, "a@b.co");
@@ -152,25 +159,35 @@ async fn auth_flow_saves_credentials(pool: PgPool) {
         assert_eq!(mode & 0o777, 0o600);
     }
 
-    // Second run short-circuits without contacting the hub.
+    // Second run short-circuits without contacting the hub, but still installs missing hooks.
     let cfg = CliConfig { hub_url: hub };
-    let mut out = Vec::new();
-    run_auth(
-        tmp.path(),
-        &cfg,
-        true,
-        Duration::from_millis(20),
-        Duration::from_secs(1),
-        None,
-        &mut out,
-    )
-    .await
-    .unwrap();
-    assert!(
-        String::from_utf8(out)
-            .unwrap()
-            .contains("Already logged in as a@b.co")
-    );
+    let again = |claude: std::path::PathBuf| {
+        let cfg = cfg.clone();
+        let dir = tmp.path().to_path_buf();
+        async move {
+            let mut out = Vec::new();
+            run_auth(
+                &dir,
+                &cfg,
+                true,
+                Duration::from_millis(20),
+                Duration::from_secs(1),
+                Some(&claude),
+                &mut out,
+            )
+            .await
+            .unwrap();
+            String::from_utf8(out).unwrap()
+        }
+    };
+    let fresh = tempfile::tempdir().unwrap();
+    let text = again(fresh.path().to_path_buf()).await;
+    assert!(text.contains("Already logged in as a@b.co"), "{text}");
+    assert!(text.contains("claude code hooks installed"), "{text}");
+    assert_eq!(ah::hooks::status(Some(fresh.path())).unwrap(), "installed");
+    // Already installed: no line.
+    let text = again(fresh.path().to_path_buf()).await;
+    assert!(!text.contains("hooks installed"), "{text}");
 }
 
 #[sqlx::test(migrations = "../hub/migrations")]
