@@ -135,7 +135,7 @@ async fn first_run_initializes_cursor_and_parks(pool: PgPool) {
         cursor_saved(e.cfg.path()).await;
         post(&e.c, e.channel, "other", "fresh").await;
     };
-    let (got, ()) = tokio::join!(wait_once_with(&e, Some(Duration::from_secs(5))), poster);
+    let (got, ()) = tokio::join!(wait_once(&e), poster);
     let got = got.unwrap();
     assert_eq!(got.len(), 1, "{got:?}");
     assert_eq!(got[0]["body"], "fresh");
@@ -215,7 +215,7 @@ async fn drain_error_still_prints_accepted_message(pool: PgPool) {
         tokio::time::sleep(Duration::from_millis(1000)).await;
         e.c.logout().await.unwrap();
     };
-    let (got, ()) = tokio::join!(wait_once(&e), poster);
+    let (got, ()) = tokio::join!(wait_once_with(&e, Some(Duration::from_secs(5))), poster);
     let got = got.unwrap();
     assert_eq!(got.len(), 1, "{got:?}");
     assert_eq!(got[0]["body"], "last words");
