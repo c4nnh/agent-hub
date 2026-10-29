@@ -1,0 +1,363 @@
+use ah::{
+    bindings::{Binding, Bindings},
+    client::HubClient,
+    mcp::{Session, tools::AgentHub, wsclient},
+};
+use ah_common::ChannelSummary;
+use ah_hub::{
+    auth::issue_token,
+    config::{HubConfig, HubMode},
+    routes::app,
+    state::AppState,
+};
+use rmcp::{
+    RoleClient, ServiceExt,
+    model::{CallToolRequestParams, CallToolResult},
+    service::RunningService,
+};
+use serde_json::{Value, json};
+use sqlx::PgPool;
+use std::{sync::Arc, time::Duration};
+use uuid::Uuid;
+
+const AGENT: &str = "claude-code@test";
+const BACKOFF: Duration = Duration::from_millis(50);
+const LIMIT: Duration = Duration::from_secs(10);
+
+async fn spawn_hub(pool: PgPool, mode: HubMode) -> String {
+    let cfg = HubConfig {
+        database_url: String::new(),
+        hub_mode: mode,
+        google_client_id: "cid".into(),
+        google_client_secret: "sec".into(),
+        public_url: "http://hub.test".into(),
+        google_base_url: None,
+    };
+    let router = app(AppState::new(
+        pool,
+        cfg,
+        Arc::new(ah_hub::embed::HashEmbedder),
+    ));
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", l.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(l, router).await.unwrap() });
+    url
+}
+
+async fn user(pool: &PgPool, hub: &str, email: &str) -> HubClient {
+    let id = Uuid::new_v4();
+    sqlx::query("insert into users (id, email, name, plan) values ($1, $2, 'N', 'free')")
+        .bind(id)
+        .bind(email)
+        .execute(pool)
+        .await
+        .unwrap();
+    let token = issue_token(pool, id).await.unwrap();
+    HubClient::new(hub.to_string(), Some(token))
+}
+
+/// A bound folder plus the MCP client talking to the server over an in-process duplex pipe.
+struct Harness {
+    session: Arc<Session>,
+    ws: tokio::task::JoinHandle<()>,
+    mcp: RunningService<RoleClient, ()>,
+    _dir: tempfile::TempDir,
+}
+
+async fn harness(token_owner: HubClient, channels: &[&ChannelSummary]) -> Harness {
+    let dir = tempfile::tempdir().unwrap();
+    let mut bindings = Bindings::default();
+    bindings.0.insert(
+        Bindings::key(dir.path()).unwrap(),
+        Binding {
+            channel_ids: channels.iter().map(|c| c.id).collect(),
+            extra_folders: vec!["/srv/shared".into()],
+        },
+    );
+    let session = tokio::time::timeout(
+        LIMIT,
+        Session::start(token_owner, &bindings, dir.path(), AGENT.into()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let ws = wsclient::spawn(session.clone(), BACKOFF);
+    let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+    let server = AgentHub::new(session.clone());
+    tokio::spawn(async move {
+        if let Ok(running) = server.serve(server_io).await {
+            let _ = running.waiting().await;
+        }
+    });
+    let mcp = tokio::time::timeout(LIMIT, ().serve(client_io))
+        .await
+        .unwrap()
+        .unwrap();
+    Harness {
+        session,
+        ws,
+        mcp,
+        _dir: dir,
+    }
+}
+
+async fn call(h: &Harness, tool: &'static str, args: Value) -> CallToolResult {
+    let params = CallToolRequestParams::new(tool).with_arguments(args.as_object().unwrap().clone());
+    tokio::time::timeout(LIMIT, h.mcp.call_tool(params))
+        .await
+        .unwrap()
+        .unwrap()
+}
+
+fn text(r: &CallToolResult) -> String {
+    r.content
+        .iter()
+        .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn is_error(r: &CallToolResult) -> bool {
+    r.is_error == Some(true)
+}
+
+async fn post_human(client: &HubClient, ch: &ChannelSummary, body: &str) {
+    tokio::time::timeout(LIMIT, client.post_human_message(ch.id, "ann", body))
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+/// Second user `b` joins channel `ch` owned by `a`.
+async fn add_member(a: &HubClient, b: &HubClient, ch: &ChannelSummary, email: &str) {
+    a.invite(ch.id, email).await.unwrap();
+    let inv = b.list_invitations().await.unwrap();
+    b.respond_invitation(inv[0].id, true).await.unwrap();
+}
+
+#[sqlx::test(migrations = "../hub/migrations")]
+async fn send_then_get_messages(pool: PgPool) {
+    let hub = spawn_hub(pool.clone(), HubMode::Open).await;
+    let a = user(&pool, &hub, "a@b.co").await;
+    let ch = a.create_channel("team").await.unwrap();
+    let h = harness(a, &[&ch]).await;
+
+    let instructions = h
+        .mcp
+        .peer_info()
+        .and_then(|i| i.instructions.clone())
+        .unwrap_or_default();
+    assert!(instructions.contains("/srv/shared"), "{instructions}");
+    assert!(instructions.contains("wait_for_message"), "{instructions}");
+
+    let sent = call(
+        &h,
+        "send_message",
+        json!({"channel": "team", "body": "hello @bob", "mentions": ["bob"]}),
+    )
+    .await;
+    assert!(!is_error(&sent), "{}", text(&sent));
+
+    let got = call(&h, "get_messages", json!({"channel": "team"})).await;
+    let body = text(&got);
+    assert!(body.contains("hello @bob"), "{body}");
+    assert!(body.contains(AGENT), "{body}");
+
+    for body in ["m1", "m2", "m3"] {
+        call(&h, "send_message", json!({"channel": "team", "body": body})).await;
+    }
+    let recent = text(&call(&h, "get_messages", json!({"channel": "team", "limit": 2})).await);
+    assert!(!recent.contains("m1"), "{recent}");
+    assert!(
+        recent.find("m2").unwrap() < recent.find("m3").unwrap(),
+        "{recent}"
+    );
+
+    let unknown = call(&h, "send_message", json!({"channel": "nope", "body": "x"})).await;
+    assert!(is_error(&unknown));
+    assert!(text(&unknown).contains("team"), "{}", text(&unknown));
+}
+
+#[sqlx::test(migrations = "../hub/migrations")]
+async fn wait_returns_when_other_session_posts(pool: PgPool) {
+    let hub = spawn_hub(pool.clone(), HubMode::Open).await;
+    let a = user(&pool, &hub, "a@b.co").await;
+    let b = user(&pool, &hub, "b@b.co").await;
+    let ch = a.create_channel("team").await.unwrap();
+    add_member(&a, &b, &ch, "b@b.co").await;
+    let h = harness(a, &[&ch]).await;
+
+    let poster = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        post_human(&b, &ch, "ping from b").await;
+    });
+    let started = std::time::Instant::now();
+    let r = call(&h, "wait_for_message", json!({"timeout_secs": 30})).await;
+    assert!(started.elapsed() < Duration::from_secs(2));
+    let body = text(&r);
+    assert!(body.contains("ping from b"), "{body}");
+    assert!(body.contains("\"channel\":\"team\""), "{body}");
+    poster.await.unwrap();
+}
+
+#[sqlx::test(migrations = "../hub/migrations")]
+async fn wait_times_out_empty(pool: PgPool) {
+    let hub = spawn_hub(pool.clone(), HubMode::Open).await;
+    let a = user(&pool, &hub, "a@b.co").await;
+    let ch = a.create_channel("team").await.unwrap();
+    let h = harness(a, &[&ch]).await;
+
+    // Own messages are not echoed back to the sender.
+    call(
+        &h,
+        "send_message",
+        json!({"channel": "team", "body": "mine"}),
+    )
+    .await;
+    let started = std::time::Instant::now();
+    let r = call(&h, "wait_for_message", json!({"timeout_secs": 1})).await;
+    assert!(started.elapsed() >= Duration::from_millis(900));
+    assert!(!is_error(&r));
+    let body = text(&r);
+    assert!(body.contains("no new messages"), "{body}");
+    assert!(!body.contains("mine"), "{body}");
+}
+
+#[sqlx::test(migrations = "../hub/migrations")]
+async fn reconnect_recovers_missed_messages(pool: PgPool) {
+    let hub = spawn_hub(pool.clone(), HubMode::Open).await;
+    let a = user(&pool, &hub, "a@b.co").await;
+    let b = user(&pool, &hub, "b@b.co").await;
+    let ch = a.create_channel("team").await.unwrap();
+    add_member(&a, &b, &ch, "b@b.co").await;
+    let mut h = harness(a, &[&ch]).await;
+
+    post_human(&b, &ch, "before drop").await;
+    let first = call(&h, "wait_for_message", json!({"timeout_secs": 5})).await;
+    assert!(text(&first).contains("before drop"), "{}", text(&first));
+
+    // Drop the websocket; messages posted now reach no live subscriber of this session.
+    h.ws.abort();
+    let _ = (&mut h.ws).await;
+    post_human(&b, &ch, "while down 1").await;
+    post_human(&b, &ch, "while down 2").await;
+
+    let _ws = wsclient::spawn(h.session.clone(), BACKOFF);
+    let r = call(&h, "wait_for_message", json!({"timeout_secs": 5})).await;
+    let body = text(&r);
+    let one = body.find("while down 1").expect(&body);
+    let two = body.find("while down 2").expect(&body);
+    assert!(one < two, "{body}");
+    assert!(!body.contains("before drop"), "{body}");
+}
+
+#[sqlx::test(migrations = "../hub/migrations")]
+async fn update_context_stale_returns_current(pool: PgPool) {
+    let hub = spawn_hub(pool.clone(), HubMode::Open).await;
+    let a = user(&pool, &hub, "a@b.co").await;
+    let ch = a.create_channel("team").await.unwrap();
+    let h = harness(a, &[&ch]).await;
+
+    let created = call(
+        &h,
+        "update_context",
+        json!({"channel": "team", "title": "overview", "body": "v1"}),
+    )
+    .await;
+    assert!(!is_error(&created), "{}", text(&created));
+    let entry: Value = serde_json::from_str(text(&created).lines().next().unwrap()).unwrap();
+    let id = entry["id"].as_str().unwrap().to_string();
+
+    let updated = call(
+        &h,
+        "update_context",
+        json!({"id": id, "channel": "team", "title": "overview", "body": "v2", "base_version": 1}),
+    )
+    .await;
+    assert!(!is_error(&updated), "{}", text(&updated));
+
+    let stale = call(
+        &h,
+        "update_context",
+        json!({"id": id, "channel": "team", "title": "overview", "body": "v3", "base_version": 1}),
+    )
+    .await;
+    let body = text(&stale);
+    assert!(
+        body.contains("stale version: merge with the current entry and retry with its version"),
+        "{body}"
+    );
+    assert!(body.contains("\"version\":2"), "{body}");
+    assert!(body.contains("v2"), "{body}");
+
+    let got = call(&h, "get_context", json!({"id": id})).await;
+    assert!(text(&got).contains("v2"), "{}", text(&got));
+    let listed = call(&h, "list_context", json!({"channel": "team"})).await;
+    assert!(text(&listed).contains("overview"), "{}", text(&listed));
+    let found = call(
+        &h,
+        "search_context",
+        json!({"channel": "team", "query": "overview"}),
+    )
+    .await;
+    assert!(text(&found).contains("overview"), "{}", text(&found));
+}
+
+#[sqlx::test(migrations = "../hub/migrations")]
+async fn free_plan_context_tool_returns_paid_required_error(pool: PgPool) {
+    let hub = spawn_hub(pool.clone(), HubMode::Hosted).await;
+    let a = user(&pool, &hub, "a@b.co").await;
+    let ch = a.create_channel("team").await.unwrap();
+    let h = harness(a, &[&ch]).await;
+
+    let r = call(&h, "list_context", json!({"channel": "team"})).await;
+    assert!(is_error(&r));
+    assert!(
+        text(&r).contains("Context store requires a paid plan"),
+        "{}",
+        text(&r)
+    );
+}
+
+#[sqlx::test(migrations = "../hub/migrations")]
+async fn unread_hint_appended(pool: PgPool) {
+    let hub = spawn_hub(pool.clone(), HubMode::Open).await;
+    let a = user(&pool, &hub, "a@b.co").await;
+    let b = user(&pool, &hub, "b@b.co").await;
+    let ch = a.create_channel("team").await.unwrap();
+    add_member(&a, &b, &ch, "b@b.co").await;
+    let h = harness(a, &[&ch]).await;
+
+    let quiet = call(&h, "list_agents", json!({"channel": "team"})).await;
+    assert!(!text(&quiet).contains("unread:"), "{}", text(&quiet));
+
+    post_human(&b, &ch, "one").await;
+    post_human(&b, &ch, "two").await;
+    let mut hinted = String::new();
+    for _ in 0..100 {
+        let r = call(&h, "list_agents", json!({"channel": "team"})).await;
+        hinted = text(&r);
+        if hinted.contains("unread: 2") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(hinted.ends_with("unread: 2"), "{hinted}");
+    assert!(hinted.contains(AGENT), "{hinted}");
+
+    // Errors carry the hint too.
+    let err = call(&h, "get_messages", json!({"channel": "nope"})).await;
+    assert!(is_error(&err));
+    assert!(text(&err).ends_with("unread: 2"), "{}", text(&err));
+}
+
+#[sqlx::test(migrations = "../hub/migrations")]
+async fn unbound_folder_tools_return_join_hint(pool: PgPool) {
+    let hub = spawn_hub(pool.clone(), HubMode::Open).await;
+    let a = user(&pool, &hub, "a@b.co").await;
+    let h = harness(a, &[]).await;
+
+    let r = call(&h, "wait_for_message", json!({"timeout_secs": 1})).await;
+    assert!(is_error(&r));
+    assert!(text(&r).contains("ah channel join"), "{}", text(&r));
+}

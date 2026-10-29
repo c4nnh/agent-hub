@@ -1,6 +1,6 @@
 use ah_common::{
-    AgentPresence, AuthPollResponse, ChannelSummary, InvitationSummary, MeResponse, Message,
-    PostMessage, SenderType,
+    AgentPresence, AuthPollResponse, ChannelSummary, ContextEntry, ContextEntrySummary, ContextHit,
+    InvitationSummary, MeResponse, Message, PostMessage, SenderType, UpsertContext,
 };
 use reqwest::{Response, StatusCode};
 use uuid::Uuid;
@@ -202,12 +202,78 @@ impl HubClient {
             sender_type: SenderType::Human,
             sender_name: sender_name.to_string(),
         };
+        self.post_message(channel_id, &msg).await
+    }
+
+    pub async fn post_message(
+        &self,
+        channel_id: Uuid,
+        msg: &PostMessage,
+    ) -> Result<Message, ClientError> {
         let res = self
             .request(
                 reqwest::Method::POST,
                 &format!("/api/channels/{channel_id}/messages"),
             )
-            .json(&msg)
+            .json(msg)
+            .send()
+            .await?;
+        Ok(Self::check(res).await?.json().await?)
+    }
+}
+
+impl HubClient {
+    pub async fn list_context(
+        &self,
+        channel_id: Uuid,
+    ) -> Result<Vec<ContextEntrySummary>, ClientError> {
+        let res = self
+            .request(
+                reqwest::Method::GET,
+                &format!("/api/channels/{channel_id}/context"),
+            )
+            .send()
+            .await?;
+        Ok(Self::check(res).await?.json().await?)
+    }
+
+    pub async fn get_context(&self, id: Uuid) -> Result<ContextEntry, ClientError> {
+        let res = self
+            .request(reqwest::Method::GET, &format!("/api/context/{id}"))
+            .send()
+            .await?;
+        Ok(Self::check(res).await?.json().await?)
+    }
+
+    /// A stale `base_version` fails with status 409 and the current entry as JSON message.
+    pub async fn upsert_context(
+        &self,
+        channel_id: Uuid,
+        req: &UpsertContext,
+    ) -> Result<ContextEntry, ClientError> {
+        let res = self
+            .request(
+                reqwest::Method::POST,
+                &format!("/api/channels/{channel_id}/context"),
+            )
+            .json(req)
+            .send()
+            .await?;
+        Ok(Self::check(res).await?.json().await?)
+    }
+
+    pub async fn search_context(
+        &self,
+        channel_id: Uuid,
+        query: &str,
+        k: Option<i64>,
+    ) -> Result<Vec<ContextHit>, ClientError> {
+        let res = self
+            .request(
+                reqwest::Method::POST,
+                &format!("/api/channels/{channel_id}/context/search"),
+            )
+            .json(&serde_json::json!({ "query": query, "k": k }))
             .send()
             .await?;
         Ok(Self::check(res).await?.json().await?)

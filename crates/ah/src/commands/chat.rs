@@ -12,9 +12,9 @@ pub const ROBOT_PREFIX: &str = "\u{1F916} ";
 
 const HISTORY_LINES: usize = 20;
 const PAGE: i64 = 500;
-const SUBSCRIBE_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const SUBSCRIBE_TIMEOUT: Duration = Duration::from_secs(10);
 const BACKOFF_START: Duration = Duration::from_secs(1);
-const BACKOFF_MAX: Duration = Duration::from_secs(30);
+pub(crate) const BACKOFF_MAX: Duration = Duration::from_secs(30);
 
 pub fn render_message(msg: &Message) -> String {
     let prefix = match msg.sender_type {
@@ -25,14 +25,14 @@ pub fn render_message(msg: &Message) -> String {
 }
 
 /// All messages after `since_id`, following the hub's page cap.
-async fn fetch_since(
+pub(crate) async fn fetch_since(
     client: &HubClient,
-    channel: &ChannelSummary,
+    channel_id: uuid::Uuid,
     mut since_id: i64,
 ) -> Result<Vec<Message>, crate::client::ClientError> {
     let mut all = Vec::new();
     loop {
-        let page = client.messages(channel.id, since_id, PAGE).await?;
+        let page = client.messages(channel_id, since_id, PAGE).await?;
         let full = page.len() as i64 == PAGE;
         if let Some(last) = page.last() {
             since_id = last.id;
@@ -88,7 +88,7 @@ async fn session(
     // Subscribed means the connection is healthy, whether or not messages follow.
     *backoff = BACKOFF_START;
     let is_first = *last_id == 0;
-    let missed = fetch_since(client, channel, *last_id).await?;
+    let missed = fetch_since(client, channel.id, *last_id).await?;
     let skip = if is_first {
         missed.len().saturating_sub(HISTORY_LINES)
     } else {

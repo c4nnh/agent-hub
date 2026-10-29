@@ -30,6 +30,12 @@ enum Command {
     },
     /// Chat live in a channel (Ctrl-D to exit)
     Chat { channel: String },
+    /// Run the MCP server for a coding agent (stdio)
+    Mcp {
+        /// Agent name shown in channels; default `<harness>@<hostname>`
+        #[arg(long)]
+        name: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -112,6 +118,7 @@ async fn run(cli: Cli, dir: &std::path::Path) -> Result<(), Box<dyn std::error::
             )
             .await
         }
+        Command::Mcp { name } => ah::mcp::run(dir, &cfg, name).await,
         Command::Logout => auth::run_logout(dir, &cfg, &mut out, &mut std::io::stderr()).await,
         Command::Chat { channel } => {
             let creds = Credentials::load(dir)?.ok_or("not logged in; run `ah auth`")?;
