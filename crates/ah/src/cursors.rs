@@ -74,3 +74,76 @@ impl Cursors {
         all.save(dir)
     }
 }
+
+/// `{config_dir}/wait-pids/<first 16 hex of sha256(folder)>.pid`: marks a running `ah wait`.
+fn pid_file(dir: &Path, folder: &str) -> PathBuf {
+    use sha2::{Digest, Sha256};
+    let hash = Sha256::digest(folder.as_bytes());
+    let name: String = hash[..8].iter().map(|b| format!("{b:02x}")).collect();
+    dir.join("wait-pids").join(format!("{name}.pid"))
+}
+
+/// Holds the pidfile of a running `ah wait`; removes it on drop. SIGKILL and Ctrl-C skip the
+/// drop, which `listener_alive` covers by treating a dead PID as stale.
+pub struct PidGuard(PathBuf);
+
+impl PidGuard {
+    pub fn write(dir: &Path, folder: &str) -> std::io::Result<Self> {
+        let path = pid_file(dir, folder);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, std::process::id().to_string())?;
+        Ok(Self(path))
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for PidGuard {
+    fn drop(&mut self) {
+        // A second `ah wait` on the folder may have taken the file over; leave it to that one.
+        let ours = std::fs::read_to_string(&self.0)
+            .is_ok_and(|s| s.trim() == std::process::id().to_string());
+        if ours {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+}
+
+/// True when an `ah wait` for `folder` (canonical key) is running. Deletes a stale pidfile.
+pub fn listener_alive(dir: &Path, folder: &str) -> bool {
+    let path = pid_file(dir, folder);
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return false;
+    };
+    let alive = text.trim().parse::<u32>().is_ok_and(pid_alive);
+    if !alive {
+        let _ = std::fs::remove_file(&path);
+    }
+    alive
+}
+
+/// ponytail: a reused PID reads as alive until that process exits; the Stop hook then skips
+/// one nudge. Storing the process start time next to the PID is the upgrade path.
+#[cfg(unix)]
+fn pid_alive(pid: u32) -> bool {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+    if pid <= 0 {
+        return false;
+    }
+    // SAFETY: signal 0 only checks that the process exists; nothing is delivered.
+    let rc = unsafe { libc::kill(pid, 0) };
+    rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// ponytail: no liveness probe on Windows; an existing pidfile counts as alive, so a killed
+/// `ah wait` silences the Stop hook until the file is removed. OpenProcess is the upgrade path.
+#[cfg(not(unix))]
+fn pid_alive(_pid: u32) -> bool {
+    true
+}

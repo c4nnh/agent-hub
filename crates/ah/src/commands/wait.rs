@@ -8,7 +8,7 @@ use crate::{
         BACKOFF_MAX, BACKOFF_START, check_close, connect_subscribed, fetch_since, next_frame,
         refusal,
     },
-    cursors::Cursors,
+    cursors::{Cursors, PidGuard},
     mcp::{UNBOUND, default_agent_name},
 };
 use ah_common::{ChannelSummary, ClientHello, Message, SenderType, WsEvent};
@@ -177,6 +177,11 @@ pub async fn run_wait(
         None => std::env::current_dir()?,
     };
     let folder = Bindings::key(&cwd)?;
+    // Tells the Claude Code Stop hook this folder is listening; removed on every return.
+    let pid_guard = PidGuard::write(dir, &folder);
+    if let Err(e) = &pid_guard {
+        eprintln!("warning: could not write the listener pidfile: {e}");
+    }
     let bindings = Bindings::load(dir)?;
     let binding = bindings.for_folder(&cwd).cloned().unwrap_or_default();
     let bound = if binding.channel_ids.is_empty() {

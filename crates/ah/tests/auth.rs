@@ -72,7 +72,7 @@ impl Write for SharedBuf {
 /// Runs `ah auth login --no-browser` while a helper plays the browser: it reads the printed URL, GETs
 /// the confirm page, checks it shows the printed verification code, confirms (hub redirects to
 /// Google), then completes the Google callback.
-async fn login(hub: &str, dir: &Path) -> String {
+async fn login(hub: &str, dir: &Path, claude: Option<&Path>) -> String {
     let cfg = CliConfig {
         hub_url: hub.to_string(),
     };
@@ -119,6 +119,7 @@ async fn login(hub: &str, dir: &Path) -> String {
         true,
         Duration::from_millis(20),
         Duration::from_secs(10),
+        claude,
         &mut out,
     )
     .await
@@ -131,7 +132,7 @@ async fn login(hub: &str, dir: &Path) -> String {
 async fn auth_flow_saves_credentials(pool: PgPool) {
     let hub = spawn_hub(pool).await;
     let tmp = tempfile::tempdir().unwrap();
-    let text = login(&hub, tmp.path()).await;
+    let text = login(&hub, tmp.path(), None).await;
     assert!(text.contains("Logged in as a@b.co"), "{text}");
 
     let creds = Credentials::load(tmp.path()).unwrap().unwrap();
@@ -160,6 +161,7 @@ async fn auth_flow_saves_credentials(pool: PgPool) {
         true,
         Duration::from_millis(20),
         Duration::from_secs(1),
+        None,
         &mut out,
     )
     .await
@@ -175,7 +177,7 @@ async fn auth_flow_saves_credentials(pool: PgPool) {
 async fn logout_deletes_and_revokes(pool: PgPool) {
     let hub = spawn_hub(pool).await;
     let tmp = tempfile::tempdir().unwrap();
-    login(&hub, tmp.path()).await;
+    login(&hub, tmp.path(), None).await;
     let token = Credentials::load(tmp.path()).unwrap().unwrap().token;
     let client = HubClient::new(hub.clone(), Some(token));
     client.me().await.unwrap();
@@ -238,6 +240,7 @@ async fn poll_times_out() {
         true,
         Duration::from_millis(10),
         Duration::from_millis(100),
+        None,
         &mut out,
     )
     .await;

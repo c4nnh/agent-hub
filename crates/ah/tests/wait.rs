@@ -259,6 +259,7 @@ async fn message_after_join_before_first_wait_is_delivered(pool: PgPool) {
         &e.c,
         e.folder.path(),
         Some("team"),
+        None,
         &mut Vec::new(),
     )
     .await

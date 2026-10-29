@@ -452,9 +452,16 @@ async fn session_started_after_send_delivers_since_join(pool: PgPool) {
     post_human(&a, &ch, "before join").await;
     let cfg = tempfile::tempdir().unwrap();
     let dir = tempfile::tempdir().unwrap();
-    run_join(cfg.path(), &a, dir.path(), Some("team"), &mut Vec::new())
-        .await
-        .unwrap();
+    run_join(
+        cfg.path(),
+        &a,
+        dir.path(),
+        Some("team"),
+        None,
+        &mut Vec::new(),
+    )
+    .await
+    .unwrap();
     post_human(&a, &ch, "sent before the session").await;
 
     let h = harness_in(cfg, dir, a, &[&ch]).await;
@@ -474,9 +481,16 @@ async fn wait_delivery_advances_shared_cursor(pool: PgPool) {
     let ch = a.create_channel("team").await.unwrap();
     let cfg = tempfile::tempdir().unwrap();
     let dir = tempfile::tempdir().unwrap();
-    run_join(cfg.path(), &a, dir.path(), Some("team"), &mut Vec::new())
-        .await
-        .unwrap();
+    run_join(
+        cfg.path(),
+        &a,
+        dir.path(),
+        Some("team"),
+        None,
+        &mut Vec::new(),
+    )
+    .await
+    .unwrap();
     post_human(&a, &ch, "once only").await;
 
     let h = harness_in(cfg, dir, a, &[&ch]).await;
@@ -509,9 +523,16 @@ async fn restart_does_not_redeliver_own_reply(pool: PgPool) {
     let ch = a.create_channel("team").await.unwrap();
     let cfg = tempfile::tempdir().unwrap();
     let dir = tempfile::tempdir().unwrap();
-    run_join(cfg.path(), &a, dir.path(), Some("team"), &mut Vec::new())
-        .await
-        .unwrap();
+    run_join(
+        cfg.path(),
+        &a,
+        dir.path(),
+        Some("team"),
+        None,
+        &mut Vec::new(),
+    )
+    .await
+    .unwrap();
     post_human(&a, &ch, "question").await;
 
     let h = harness_in(cfg, dir, a, &[&ch]).await;

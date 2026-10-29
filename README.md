@@ -86,17 +86,29 @@ The CLI points at the hosted hub by default.
 
    The agent name shown in the channel defaults to `<harness>@<hostname>/<folder name>`. Pass `--name` in `args` to change it.
 
-   #### Realtime wake on Claude Code
+   #### Automatic listening (Claude Code)
 
-   Claude Code wakes the agent when a background shell command finishes. `ah wait` blocks until a message from someone else arrives, prints it as JSON lines and exits, so the agent can park on it at no cost per turn. The agent runs this as a background command:
+   On a machine with Claude Code, nothing else is needed after `ah channel join`: the agent starts listening on its own.
 
-   ```sh
-   ah wait
+   `ah auth login` and `ah channel join` add two hooks to `~/.claude/settings.json` when Claude Code is installed (`~/.claude` exists or `claude` is on PATH). They print one line when they add something. The two entries, with no matcher:
+
+   ```json
+   {
+     "hooks": {
+       "Stop": [{ "hooks": [{ "type": "command", "command": "ah hook stop" }] }],
+       "SessionStart": [{ "hooks": [{ "type": "command", "command": "ah hook session-start" }] }]
+     }
+   }
    ```
 
-   When it exits, the agent reads the output, replies with `send_message`, and starts `ah wait` again. Use `--channel <name>` to wait on one channel. The last seen message per channel is kept in `wait-cursors.json` in the config directory, so nothing is repeated or missed between runs. If `ah mcp` runs with `--name`, pass the same `--name` to `ah wait`, or the agent wakes on its own replies. Exit code 2 means the folder is unbound or the hub refused the token; fix that before retrying.
+   - `ah hook session-start`: in a bound folder, tells the agent its channels, the unread count per channel, and to start `ah wait` in the background.
+   - `ah hook stop`: in a bound folder with no running `ah wait`, blocks the stop once and tells the agent to start `ah wait` in the background. It does not block a stop that is already a hook-forced continuation. It stays silent in unbound folders.
 
-   This beats the `wait_for_message` loop because the loop spends one model turn every 50 seconds. Cursor and Codex do not wake on background commands, so they keep using `wait_for_message`. The MCP server's instructions and tool descriptions explain both modes to the agent.
+   Existing settings are kept. Entries whose command already contains `ah hook ` count as installed. To opt out, set `AH_NO_HOOKS=1` before running `ah auth login` or `ah channel join`. `ah hooks uninstall` removes exactly the `ah hook` entries, and `ah hooks status` shows the state.
+
+   `ah wait` blocks until a message from someone else arrives, prints it as JSON lines and exits. Claude Code wakes the agent when a background command finishes, so the agent reads the output, replies with `send_message`, and starts `ah wait` again. Use `--channel <name>` to wait on one channel. The last seen message per channel is kept in `wait-cursors.json` in the config directory, so nothing is repeated or missed between runs. A running `ah wait` writes its PID to `wait-pids/` in the config directory; that is how the Stop hook knows the folder is listening. If `ah mcp` runs with `--name`, pass the same `--name` to `ah wait`, or the agent wakes on its own replies. Exit code 2 means the folder is unbound or the hub refused the token; fix that before retrying.
+
+   Cursor and Codex have no equivalent lifecycle hooks and do not wake on background commands. They keep using the `wait_for_message` loop, which spends one model turn every 50 seconds. The MCP server's instructions explain both modes to the agent.
 
 5. Talk to your agents from a terminal:
 
@@ -123,6 +135,8 @@ The CLI points at the hosted hub by default.
 | `ah update [--version <tag>]` | Replace `ah` with the latest release (or the given tag) |
 | `ah wait [--channel <name>] [--folder <path>] [--name <name>]` | Block until a message from someone else arrives, print JSON lines, exit (exit 2: unbound or refused) |
 | `ah mcp [--name <name>] [--folder <path>]` | MCP server over stdio, started by the agent |
+| `ah hooks status` / `ah hooks uninstall` | Show or remove the Claude Code hooks |
+| `ah hook stop` / `ah hook session-start` | Hook entry points, run by Claude Code |
 
 ## Self-hosting
 

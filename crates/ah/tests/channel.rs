@@ -66,7 +66,7 @@ async fn create_join_binds_cwd(pool: PgPool) {
 
     for _ in 0..2 {
         let mut out = Vec::new();
-        run_join(dir.path(), &c, cwd.path(), Some("team"), &mut out)
+        run_join(dir.path(), &c, cwd.path(), Some("team"), None, &mut out)
             .await
             .unwrap();
         assert!(text(out).contains("no active agents"));
@@ -126,7 +126,7 @@ async fn leave_unbinds(pool: PgPool) {
     let other = c.create_channel("other").await.unwrap();
     let mut out = Vec::new();
     for (f, ch) in [(&f1, "team"), (&f1, "other"), (&f2, "team")] {
-        run_join(dir.path(), &c, f.path(), Some(ch), &mut out)
+        run_join(dir.path(), &c, f.path(), Some(ch), None, &mut out)
             .await
             .unwrap();
     }
@@ -190,13 +190,13 @@ async fn leave_account_removes_membership(pool: PgPool) {
         .await
         .unwrap();
 
-    run_join(dir.path(), &owner, f1.path(), Some("team"), &mut out)
+    run_join(dir.path(), &owner, f1.path(), Some("team"), None, &mut out)
         .await
         .unwrap();
-    run_join(dir.path(), &owner, f1.path(), Some("other"), &mut out)
+    run_join(dir.path(), &owner, f1.path(), Some("other"), None, &mut out)
         .await
         .unwrap();
-    run_join(dir.path(), &owner, f2.path(), Some("team"), &mut out)
+    run_join(dir.path(), &owner, f2.path(), Some("team"), None, &mut out)
         .await
         .unwrap();
     let team_id = owner
@@ -221,7 +221,7 @@ async fn leave_account_removes_membership(pool: PgPool) {
     );
 
     // Guest leaves: removed from every folder binding it appears in.
-    run_join(dir.path(), &guest, f1.path(), Some("team"), &mut out)
+    run_join(dir.path(), &guest, f1.path(), Some("team"), None, &mut out)
         .await
         .unwrap();
     let mut out = Vec::new();
@@ -244,7 +244,7 @@ async fn config_adds_extra_folder(pool: PgPool) {
     let extra = tempfile::tempdir().unwrap();
     let mut out = Vec::new();
     run_create(&c, "team", &mut out).await.unwrap();
-    run_join(dir.path(), &c, cwd.path(), Some("team"), &mut out)
+    run_join(dir.path(), &c, cwd.path(), Some("team"), None, &mut out)
         .await
         .unwrap();
 
@@ -333,10 +333,10 @@ async fn config_folder_refuses_overwrite(pool: PgPool) {
     let mut out = Vec::new();
     run_create(&c, "team", &mut out).await.unwrap();
     run_create(&c, "other", &mut out).await.unwrap();
-    run_join(dir.path(), &c, a.path(), Some("team"), &mut out)
+    run_join(dir.path(), &c, a.path(), Some("team"), None, &mut out)
         .await
         .unwrap();
-    run_join(dir.path(), &c, b.path(), Some("other"), &mut out)
+    run_join(dir.path(), &c, b.path(), Some("other"), None, &mut out)
         .await
         .unwrap();
     let before = Bindings::load(dir.path()).unwrap();
@@ -370,17 +370,72 @@ async fn join_seeds_cursor_once(pool: PgPool) {
         .unwrap()
         .id;
 
-    run_join(dir.path(), &c, cwd.path(), Some("team"), &mut Vec::new())
-        .await
-        .unwrap();
+    run_join(
+        dir.path(),
+        &c,
+        cwd.path(),
+        Some("team"),
+        None,
+        &mut Vec::new(),
+    )
+    .await
+    .unwrap();
     let seeded = Cursors::load_folder(dir.path(), &folder).unwrap();
     assert_eq!(seeded.get(&ch.id), Some(&last));
 
     // Joining again after more posts keeps the cursor: it marks delivery history.
     c.post_human_message(ch.id, "ann", "newer").await.unwrap();
-    run_join(dir.path(), &c, cwd.path(), Some("team"), &mut Vec::new())
-        .await
-        .unwrap();
+    run_join(
+        dir.path(),
+        &c,
+        cwd.path(),
+        Some("team"),
+        None,
+        &mut Vec::new(),
+    )
+    .await
+    .unwrap();
     let again = Cursors::load_folder(dir.path(), &folder).unwrap();
     assert_eq!(again.get(&ch.id), Some(&last));
+}
+
+#[sqlx::test(migrations = "../hub/migrations")]
+async fn join_installs_claude_code_hooks(pool: PgPool) {
+    let hub = spawn_hub(pool.clone()).await;
+    let c = client(&pool, &hub, "a@b.co").await;
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let claude = home.path().join(".claude");
+    std::fs::create_dir(&claude).unwrap();
+    c.create_channel("team").await.unwrap();
+
+    let mut out = Vec::new();
+    run_join(
+        dir.path(),
+        &c,
+        cwd.path(),
+        Some("team"),
+        Some(&claude),
+        &mut out,
+    )
+    .await
+    .unwrap();
+    assert!(text(out).contains("claude code hooks installed"));
+    let settings = std::fs::read_to_string(claude.join("settings.json")).unwrap();
+    assert!(settings.contains("ah hook stop") && settings.contains("ah hook session-start"));
+
+    // Second join: nothing to install, no line.
+    let mut out = Vec::new();
+    run_join(
+        dir.path(),
+        &c,
+        cwd.path(),
+        Some("team"),
+        Some(&claude),
+        &mut out,
+    )
+    .await
+    .unwrap();
+    assert!(!text(out).contains("hooks installed"));
 }

@@ -2,9 +2,10 @@ use ah::{
     client::HubClient,
     commands::{auth, channel, chat, update, wait},
     config::{self, Credentials},
+    hooks,
 };
 use clap::{Parser, Subcommand};
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
 
 #[derive(Parser)]
 #[command(name = "ah", version, about = "Agent Hub CLI")]
@@ -19,6 +20,17 @@ enum Command {
     Auth {
         #[command(subcommand)]
         command: AuthCommand,
+    },
+    /// Claude Code hook entry points (run by the hooks that `ah auth login` and
+    /// `ah channel join` install)
+    Hook {
+        #[command(subcommand)]
+        event: HookEvent,
+    },
+    /// Inspect or remove the installed Claude Code hooks
+    Hooks {
+        #[command(subcommand)]
+        command: HooksCommand,
     },
     /// Manage channels and folder bindings
     Channel {
@@ -66,6 +78,22 @@ enum AuthCommand {
     },
     /// Revoke the token and delete local credentials
     Logout,
+}
+
+#[derive(Subcommand)]
+enum HookEvent {
+    /// Stop hook: blocks the stop when a bound folder has no running `ah wait`
+    Stop,
+    /// SessionStart hook: lists the folder's channels and unread counts
+    SessionStart,
+}
+
+#[derive(Subcommand)]
+enum HooksCommand {
+    /// Remove the `ah hook` entries from ~/.claude/settings.json
+    Uninstall,
+    /// Show whether the hooks are installed
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -133,6 +161,15 @@ struct Answer {
 async fn main() {
     let cli = Cli::parse();
     let dir = config::config_dir();
+    // Hooks run in every Claude Code session: they must not fail on a bad config.
+    if let Command::Hook { event } = cli.command {
+        let event = match event {
+            HookEvent::Stop => hooks::Event::Stop,
+            HookEvent::SessionStart => hooks::Event::SessionStart,
+        };
+        hooks::run_hook(&dir, event).await;
+        return;
+    }
     let result = run(cli, &dir).await;
     if let Err(e) = result {
         eprintln!("error: {e}");
@@ -142,10 +179,37 @@ async fn main() {
     }
 }
 
+fn run_hooks(
+    command: HooksCommand,
+    out: &mut impl Write,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match command {
+        HooksCommand::Uninstall => {
+            let removed = hooks::uninstall(hooks::user_claude_dir().as_deref())?;
+            if removed.is_empty() {
+                writeln!(out, "no ah hook entries found")?;
+            }
+            for c in removed {
+                writeln!(out, "removed hook: {c}")?;
+            }
+        }
+        HooksCommand::Status => {
+            let status = hooks::status(hooks::claude_dir().as_deref())?;
+            writeln!(out, "claude code hooks: {status}")?;
+        }
+    }
+    Ok(())
+}
+
 async fn run(cli: Cli, dir: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
-    let cfg = config::CliConfig::load(dir)?;
     let mut out = std::io::stdout();
-    match cli.command {
+    // Local settings only: works with a missing or broken CLI config.
+    let command = match cli.command {
+        Command::Hooks { command } => return run_hooks(command, &mut out),
+        other => other,
+    };
+    let cfg = config::CliConfig::load(dir)?;
+    match command {
         Command::Auth {
             command: AuthCommand::Login { no_browser },
         } => {
@@ -155,6 +219,7 @@ async fn run(cli: Cli, dir: &std::path::Path) -> Result<(), Box<dyn std::error::
                 no_browser,
                 auth::POLL_INTERVAL,
                 auth::POLL_TIMEOUT,
+                hooks::claude_dir().as_deref(),
                 &mut out,
             )
             .await
@@ -167,6 +232,7 @@ async fn run(cli: Cli, dir: &std::path::Path) -> Result<(), Box<dyn std::error::
                 .await
                 .map_err(|e| e as Box<dyn std::error::Error>)
         }
+        Command::Hook { .. } | Command::Hooks { .. } => Ok(()),
         Command::Mcp { name, folder } => ah::mcp::run(dir, &cfg, name, folder).await,
         Command::Wait {
             channel,
@@ -203,7 +269,16 @@ async fn run(cli: Cli, dir: &std::path::Path) -> Result<(), Box<dyn std::error::
                     channel::run_create(&client, &name, &mut out).await
                 }
                 ChannelCommand::Join { channel } => {
-                    channel::run_join(dir, &client, &cwd, channel.as_deref(), &mut out).await
+                    let claude = hooks::claude_dir();
+                    channel::run_join(
+                        dir,
+                        &client,
+                        &cwd,
+                        channel.as_deref(),
+                        claude.as_deref(),
+                        &mut out,
+                    )
+                    .await
                 }
                 ChannelCommand::Leave {
                     channel,
