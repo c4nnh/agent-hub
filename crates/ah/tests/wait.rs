@@ -1,7 +1,7 @@
 use ah::{
     bindings::{Binding, Bindings},
     client::HubClient,
-    commands::wait::{Refusal, WaitArgs, run_wait},
+    commands::wait::{Refusal, WaitArgs, Waiter, run_wait},
 };
 use ah_common::{PostMessage, SenderType};
 use ah_hub::{
@@ -9,6 +9,7 @@ use ah_hub::{
     config::{HubConfig, HubMode},
     routes::app,
     state::AppState,
+    ws::Registry,
 };
 use sqlx::PgPool;
 use std::{path::Path, time::Duration};
@@ -17,7 +18,7 @@ use uuid::Uuid;
 const ME: &str = "waiter";
 const LIMIT: Duration = Duration::from_secs(10);
 
-async fn spawn_hub(pool: PgPool) -> String {
+async fn spawn_hub(pool: PgPool, registry: Registry) -> String {
     let cfg = HubConfig {
         database_url: String::new(),
         hub_mode: HubMode::Open,
@@ -26,11 +27,9 @@ async fn spawn_hub(pool: PgPool) -> String {
         public_url: "http://hub.test".into(),
         google_base_url: None,
     };
-    let router = app(AppState::new(
-        pool,
-        cfg,
-        std::sync::Arc::new(ah_hub::embed::HashEmbedder),
-    ));
+    let mut state = AppState::new(pool, cfg, std::sync::Arc::new(ah_hub::embed::HashEmbedder));
+    state.registry = registry;
+    let router = app(state);
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", l.local_addr().unwrap());
     tokio::spawn(async move { axum::serve(l, router).await.unwrap() });
@@ -68,7 +67,11 @@ struct Env {
 }
 
 async fn env(pool: &PgPool) -> Env {
-    let hub = spawn_hub(pool.clone()).await;
+    env_with(pool, Registry::default()).await
+}
+
+async fn env_with(pool: &PgPool, registry: Registry) -> Env {
+    let hub = spawn_hub(pool.clone(), registry).await;
     let c = client(pool, &hub, "a@b.co").await;
     let channel = c.create_channel("team").await.unwrap().id;
     let cfg = tempfile::tempdir().unwrap();
@@ -184,4 +187,51 @@ async fn cursor_advances(pool: PgPool) {
     // Nothing new: a second run must park, not reprint "one".
     let second = tokio::time::timeout(Duration::from_millis(800), wait_once(&e)).await;
     assert!(second.is_err(), "second run returned {second:?}");
+}
+
+/// The hub closes the socket (revoked token) while wait is draining after the first message.
+/// The accepted message must still be printed.
+#[sqlx::test(migrations = "../hub/migrations")]
+async fn drain_error_still_prints_accepted_message(pool: PgPool) {
+    let registry = Registry::with_tuning(256, Duration::from_millis(20));
+    let e = env_with(&pool, registry).await;
+    let poster = async {
+        cursor_saved(e.cfg.path()).await;
+        // Presence shows once the waiter is subscribed.
+        while e.c.list_agents(e.channel).await.unwrap().is_empty() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        post(&e.c, e.channel, "other", "last words").await;
+        // Let the push arrive first; the close must land inside the 200ms drain.
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        e.c.logout().await.unwrap();
+    };
+    let (got, ()) = tokio::join!(wait_once(&e), poster);
+    let got = got.unwrap();
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert_eq!(got[0]["body"], "last words");
+}
+
+/// Channel A yields a message, channel B's fetch fails: A's message stays buffered.
+#[sqlx::test(migrations = "../hub/migrations")]
+async fn gap_check_keeps_messages_when_a_later_channel_fails(pool: PgPool) {
+    let e = env(&pool).await;
+    let hub_url = e.c.url("");
+    let other = client(&pool, hub_url.trim_end_matches('/'), "c@d.co").await;
+    let foreign = other.create_channel("foreign").await.unwrap();
+    let mine = e.c.list_channels().await.unwrap();
+    post(&e.c, e.channel, "other", "on A").await;
+    let mut channels = mine;
+    channels.push(foreign);
+    let mut w = Waiter {
+        client: &e.c,
+        agent_name: ME.into(),
+        folder: String::new(),
+        cursors: channels.iter().map(|c| (c.id, 0)).collect(),
+        channels,
+        pending: Vec::new(),
+    };
+    assert!(w.gap_check().await.is_err());
+    assert_eq!(w.pending.len(), 1);
+    assert_eq!(w.pending[0].body, "on A");
 }

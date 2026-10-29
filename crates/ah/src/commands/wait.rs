@@ -69,43 +69,51 @@ impl Cursors {
     }
 }
 
-struct Waiter<'a> {
-    client: &'a HubClient,
-    agent_name: String,
-    folder: String,
-    channels: Vec<ChannelSummary>,
-    cursors: BTreeMap<Uuid, i64>,
+#[doc(hidden)] // public only so tests/wait.rs can exercise the buffer invariant
+pub struct Waiter<'a> {
+    pub client: &'a HubClient,
+    pub agent_name: String,
+    pub folder: String,
+    pub channels: Vec<ChannelSummary>,
+    pub cursors: BTreeMap<Uuid, i64>,
+    /// Accepted messages not yet printed. Invariant: a cursor only runs ahead of messages that
+    /// are already printed or sit in this buffer, which `next_messages` returns even when a
+    /// later step errors. Never hold accepted messages in a local that an error can drop.
+    pub pending: Vec<Message>,
 }
 
 impl Waiter<'_> {
-    /// Moves the cursor past `msg`. Returns it unless it is old or sent by this agent.
-    /// ponytail: self filter is by name, so two sessions sharing a name do not hear each other;
-    /// pass distinct --name values if that matters.
-    fn accept(&mut self, msg: Message) -> Option<Message> {
+    /// Moves the cursor past `msg` and buffers it unless it is old or sent by this agent.
+    /// ponytail: self filter is by name, so two sessions sharing a name do not hear each other.
+    /// It also misses our own posts when `ah mcp` runs with a custom --name and this command
+    /// does not get the same one; pass the same --name to both.
+    fn accept(&mut self, msg: Message) {
         let cursor = self.cursors.entry(msg.channel_id).or_insert(0);
         if msg.id <= *cursor {
-            return None;
+            return;
         }
         *cursor = msg.id;
-        (msg.sender_name != self.agent_name).then_some(msg)
+        if msg.sender_name != self.agent_name {
+            self.pending.push(msg);
+        }
     }
 
-    async fn gap_check(&mut self) -> Result<Vec<Message>, Error> {
-        let mut found = Vec::new();
+    pub async fn gap_check(&mut self) -> Result<(), Error> {
         for ch in self.channels.clone() {
             let since = self.cursors.get(&ch.id).copied().unwrap_or(0);
             for m in fetch_since(self.client, ch.id, since).await? {
-                found.extend(self.accept(m));
+                self.accept(m);
             }
         }
-        Ok(found)
+        Ok(())
     }
 
-    /// One attempt: gap-check, then park on a websocket. Empty means the socket closed.
-    async fn attempt(&mut self, backoff: &mut Duration) -> Result<Vec<Message>, Error> {
-        let found = self.gap_check().await?;
-        if !found.is_empty() {
-            return Ok(found);
+    /// One attempt: gap-check, then park on a websocket. Returns Ok with `pending` empty when the
+    /// socket closed.
+    async fn attempt(&mut self, backoff: &mut Duration) -> Result<(), Error> {
+        self.gap_check().await?;
+        if !self.pending.is_empty() {
+            return Ok(());
         }
         let hello = ClientHello {
             agent_name: Some(self.agent_name.clone()),
@@ -116,29 +124,28 @@ impl Waiter<'_> {
         let mut ws = connect_subscribed(self.client, &hello).await?;
         *backoff = BACKOFF_START;
         // A message posted between the first gap-check and the subscription is only in the REST log.
-        let found = self.gap_check().await?;
-        if !found.is_empty() {
-            return Ok(found);
+        self.gap_check().await?;
+        if !self.pending.is_empty() {
+            return Ok(());
         }
-        let mut got = Vec::new();
         loop {
-            let frame = if got.is_empty() {
+            let frame = if self.pending.is_empty() {
                 next_frame(&mut ws).await?
             } else {
                 match tokio::time::timeout(DRAIN, next_frame(&mut ws)).await {
                     Ok(frame) => frame?,
-                    Err(_) => return Ok(got),
+                    Err(_) => return Ok(()),
                 }
             };
             let Some(frame) = frame else {
-                return Ok(got);
+                return Ok(());
             };
             check_close(&frame)?;
             let tungstenite::Message::Text(t) = frame else {
                 continue;
             };
             match serde_json::from_str(&t) {
-                Ok(WsEvent::Message { message }) => got.extend(self.accept(message)),
+                Ok(WsEvent::Message { message }) => self.accept(message),
                 Ok(_) => {}
                 Err(error) => eprintln!("warning: unreadable frame: {error}"),
             }
@@ -149,9 +156,12 @@ impl Waiter<'_> {
     async fn next_messages(&mut self) -> Result<Vec<Message>, Refusal> {
         let mut backoff = BACKOFF_START;
         loop {
-            match self.attempt(&mut backoff).await {
-                Ok(found) if !found.is_empty() => return Ok(found),
-                Ok(_) => eprintln!("connection closed; reconnecting in {backoff:?}"),
+            let result = self.attempt(&mut backoff).await;
+            if !self.pending.is_empty() {
+                return Ok(std::mem::take(&mut self.pending));
+            }
+            match result {
+                Ok(()) => eprintln!("connection closed; reconnecting in {backoff:?}"),
                 Err(e) => {
                     if let Some(reason) = refusal(e.as_ref()) {
                         return Err(Refusal(reason));
@@ -230,6 +240,7 @@ pub async fn run_wait(
         folder,
         channels,
         cursors,
+        pending: Vec::new(),
     };
     let messages = waiter.next_messages().await?;
     for m in &messages {
