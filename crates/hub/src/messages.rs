@@ -1,4 +1,4 @@
-use crate::{auth::CurrentUser, channels::require_member, state::AppState};
+use crate::{auth::CurrentUser, channels::require_member, state::AppState, ws::Registry};
 use ah_common::{Message, PostMessage, SenderType};
 use axum::{
     Json,
@@ -7,6 +7,7 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
+use sqlx::PgPool;
 use uuid::Uuid;
 
 const MAX_BODY_BYTES: usize = 64 * 1024;
@@ -69,12 +70,33 @@ pub async fn post(
         );
         return Err(StatusCode::BAD_REQUEST);
     }
+    // axum drops this future when the HTTP client disconnects. A commit without its publish
+    // would be skipped forever by client cursors, so commit and publish run in their own task,
+    // which finishes even if nobody waits for it.
+    let task = tokio::spawn(insert_and_publish(
+        s.pool.clone(),
+        s.registry.clone(),
+        u.id,
+        channel_id,
+        req,
+    ));
+    let message = task.await.map_err(internal)??;
+    Ok((StatusCode::CREATED, Json(message)))
+}
+
+async fn insert_and_publish(
+    pool: PgPool,
+    registry: Registry,
+    user_id: Uuid,
+    channel_id: Uuid,
+    req: PostMessage,
+) -> Result<Message, StatusCode> {
     // Clients track a per-channel high-water id and drop anything at or below it, so ids must
     // commit and publish in order per channel. The advisory lock orders id assignment and commit
     // across hub processes; the in-process lock also covers the gap between commit and publish.
     // ponytail: one lock for all channels per process; make it per channel if posts contend.
-    let _order = s.registry.post_order.lock().await;
-    let mut tx = s.pool.begin().await.map_err(internal)?;
+    let _order = registry.post_order.clone().lock_owned().await;
+    let mut tx = pool.begin().await.map_err(internal)?;
     sqlx::query("select pg_advisory_xact_lock(hashtext($1::uuid::text))")
         .bind(channel_id)
         .execute(&mut *tx)
@@ -85,7 +107,7 @@ pub async fn post(
          values ($1, $2, $3, $4, $5, $6, $7) returning {COLUMNS}"
     ))
     .bind(channel_id)
-    .bind(u.id)
+    .bind(user_id)
     .bind(req.sender_type.as_str())
     .bind(&req.sender_name)
     .bind(&req.body)
@@ -96,8 +118,8 @@ pub async fn post(
     .map_err(internal)?;
     tx.commit().await.map_err(internal)?;
     let message = to_message(row);
-    s.registry.publish(channel_id, &message);
-    Ok((StatusCode::CREATED, Json(message)))
+    registry.publish(channel_id, &message);
+    Ok(message)
 }
 
 #[derive(Deserialize)]

@@ -288,3 +288,38 @@ async fn free_user_open_mode_allowed(pool: PgPool) {
     let (status, _) = upsert(&app, &t, ch, json!({"title": "T", "body": "B"})).await;
     assert_eq!(status, StatusCode::CREATED);
 }
+
+/// Fails the first call, then embeds normally.
+struct FlakyEmbedder(std::sync::atomic::AtomicBool);
+
+impl ah_hub::embed::Embedder for FlakyEmbedder {
+    fn embed(&self, text: &str) -> Result<Vec<f32>, String> {
+        let failed_before = self.0.swap(true, std::sync::atomic::Ordering::SeqCst);
+        if !failed_before {
+            return Err("model error".into());
+        }
+        HashEmbedder.embed(text)
+    }
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn embed_error_is_500_and_next_call_works(pool: PgPool) {
+    let t = user(&pool, "a@x.com", "free").await;
+    let cfg = HubConfig {
+        database_url: String::new(),
+        hub_mode: HubMode::Open,
+        google_client_id: "cid".into(),
+        google_client_secret: "sec".into(),
+        public_url: "http://hub.test".into(),
+        google_base_url: None,
+    };
+    let flaky = FlakyEmbedder(Default::default());
+    let app = app(AppState::new(pool, cfg, Arc::new(flaky)));
+    let ch = new_channel(&app, &t).await;
+    let uri = format!("/api/channels/{ch}/context");
+    let entry = json!({"title": "T", "body": "B"});
+    let (status, _) = call(&app, Method::POST, &uri, &t, Some(entry.clone())).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    let (status, _) = call(&app, Method::POST, &uri, &t, Some(entry)).await;
+    assert_eq!(status, StatusCode::CREATED);
+}

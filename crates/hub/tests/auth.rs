@@ -16,16 +16,15 @@ use tower::ServiceExt;
 const C1: &str = "11111111-1111-1111-1111-111111111111";
 const C2: &str = "22222222-2222-2222-2222-222222222222";
 
-async fn fake_google() -> String {
+async fn fake_google(email_verified: bool) -> String {
+    let userinfo =
+        serde_json::json!({"email": "a@b.co", "email_verified": email_verified, "name": "Ann"});
     let router = Router::new()
         .route(
             "/token",
             post(|| async { Json(serde_json::json!({"access_token": "at"})) }),
         )
-        .route(
-            "/userinfo",
-            get(|| async { Json(serde_json::json!({"email": "a@b.co", "name": "Ann"})) }),
-        );
+        .route("/userinfo", get(move || async move { Json(userinfo) }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -33,13 +32,17 @@ async fn fake_google() -> String {
 }
 
 async fn hub(pool: PgPool) -> Router {
+    hub_with(pool, true).await
+}
+
+async fn hub_with(pool: PgPool, email_verified: bool) -> Router {
     let cfg = HubConfig {
         database_url: String::new(),
         hub_mode: HubMode::Open,
         google_client_id: "cid".into(),
         google_client_secret: "sec".into(),
         public_url: "http://hub.test".into(),
-        google_base_url: Some(fake_google().await),
+        google_base_url: Some(fake_google(email_verified).await),
     };
     app(AppState::new(
         pool,
@@ -133,20 +136,97 @@ async fn cli_flow_issues_token(pool: PgPool) {
     assert_eq!(s, StatusCode::BAD_REQUEST);
 }
 
+async fn send(app: &Router, req: Request<Body>) -> axum::response::Response {
+    app.clone().oneshot(req).await.unwrap()
+}
+
+fn confirm(code: &str, origin: Option<&str>) -> Request<Body> {
+    let mut req = Request::builder()
+        .method(Method::POST)
+        .uri("/auth/confirm")
+        .header("content-type", "application/x-www-form-urlencoded");
+    if let Some(o) = origin {
+        req = req.header("origin", o);
+    }
+    req.body(Body::from(format!("code={code}"))).unwrap()
+}
+
 #[sqlx::test(migrations = "./migrations")]
-async fn auth_start_redirects_to_google(pool: PgPool) {
+async fn start_page_shows_user_code_and_requires_confirm(pool: PgPool) {
     let app = hub(pool).await;
-    let req = Request::builder()
-        .uri("/auth/start?code=c9")
+    let start = Request::builder()
+        .uri(format!("/auth/start?code={C1}"))
         .body(Body::empty())
         .unwrap();
-    let res = app.oneshot(req).await.unwrap();
-    assert!(res.status().is_redirection());
+    let res = send(&app, start).await;
+    // The page does not send the browser on to Google by itself.
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(res.headers()["x-frame-options"], "DENY");
+    let page = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let page = String::from_utf8(page.to_vec()).unwrap();
+    assert!(page.contains(&ah_common::user_code(C1)), "{page}");
+    assert!(page.contains(r#"action="/auth/confirm""#), "{page}");
+
+    let res = send(&app, confirm(C1, Some("http://hub.test"))).await;
+    assert_eq!(res.status(), StatusCode::SEE_OTHER);
     let loc = res.headers()["location"].to_str().unwrap();
     assert!(
-        loc.contains("/auth?") && loc.contains("state=c9") && loc.contains("client_id=cid"),
+        loc.contains("/auth?")
+            && loc.contains(&format!("state={C1}"))
+            && loc.contains("client_id=cid"),
         "{loc}"
     );
+
+    // A form posted from another site, or with no origin, does not reach Google.
+    let res = send(&app, confirm(C1, Some("https://evil.example"))).await;
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    let res = send(&app, confirm(C1, None)).await;
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn start_page_rejects_markup_in_code(pool: PgPool) {
+    let app = hub(pool).await;
+    let code = format!("{C1}%22%3E%3Cscript%3E");
+    let start = Request::builder()
+        .uri(format!("/auth/start?code={code}"))
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(send(&app, start).await.status(), StatusCode::BAD_REQUEST);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn unverified_google_email_gets_no_token(pool: PgPool) {
+    let app = hub_with(pool.clone(), false).await;
+    let start = format!(r#"{{"code":"{C1}"}}"#);
+    let (s, _) = call(
+        &app,
+        Method::POST,
+        "/api/auth/cli/start",
+        None,
+        Some(&start),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let cb = format!("/auth/callback?code=gc&state={C1}");
+    let (s, _) = call(&app, Method::GET, &cb, None, None).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _) = call(
+        &app,
+        Method::GET,
+        &format!("/api/auth/cli/poll?code={C1}"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let users: i64 = sqlx::query_scalar("select count(*) from users")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(users, 0);
 }
 
 #[sqlx::test(migrations = "./migrations")]

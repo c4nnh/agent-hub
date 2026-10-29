@@ -66,7 +66,8 @@ async fn member(s: &AppState, user_id: Uuid, channel_id: Uuid) -> Result<(), Res
 async fn embed(s: &AppState, text: String) -> Result<Vector, Response> {
     let embedder = s.embedder.clone();
     let joined = tokio::task::spawn_blocking(move || embedder.embed(&text)).await;
-    joined.map(Vector::from).map_err(internal)
+    let embedded = joined.map_err(internal)?;
+    embedded.map(Vector::from).map_err(internal)
 }
 
 pub async fn list(

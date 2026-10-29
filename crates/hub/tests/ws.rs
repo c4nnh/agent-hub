@@ -393,3 +393,131 @@ async fn concurrent_posts_all_delivered(pool: PgPool) {
     }
     assert!(ids.windows(2).all(|w| w[0] < w[1]), "{ids:?}");
 }
+
+/// Reads frames (so pings get answered) until the hub closes; returns the close frame.
+async fn wait_close(ws: &mut Client, within: Duration) -> tungstenite::protocol::CloseFrame {
+    timeout(within, async {
+        loop {
+            match ws.next().await {
+                Some(Ok(tungstenite::Message::Close(Some(frame)))) => return frame,
+                Some(Ok(_)) => continue,
+                other => panic!("expected close frame, got {other:?}"),
+            }
+        }
+    })
+    .await
+    .expect("hub did not close the connection")
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn logout_closes_live_ws(pool: PgPool) {
+    let tick = Duration::from_millis(100);
+    let server = serve_with(pool.clone(), Registry::with_tuning(8, tick)).await;
+    let token = user(&pool, "a@x.io").await;
+    let channel = new_channel(&server.app, &token).await;
+    let mut ws = connect(&server, &token).await.unwrap();
+    hello(&mut ws, Some("bot"), None, vec![channel]).await;
+    assert_eq!(next_event(&mut ws).await, WsEvent::Subscribed);
+
+    let (status, _) = call(&server.app, Method::POST, "/api/auth/logout", &token, None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    // Two ticks plus scheduling slack.
+    let frame = wait_close(&mut ws, tick * 5).await;
+    assert_eq!(
+        frame.code,
+        tungstenite::protocol::frame::coding::CloseCode::Policy
+    );
+    assert_eq!(frame.reason.as_str(), "token revoked");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn leaving_channel_closes_live_ws(pool: PgPool) {
+    let tick = Duration::from_millis(100);
+    let server = serve_with(pool.clone(), Registry::with_tuning(8, tick)).await;
+    let token = user(&pool, "a@x.io").await;
+    let channel = new_channel(&server.app, &token).await;
+    let mut ws = connect(&server, &token).await.unwrap();
+    hello(&mut ws, Some("bot"), None, vec![channel]).await;
+    assert_eq!(next_event(&mut ws).await, WsEvent::Subscribed);
+
+    let uri = format!("/api/channels/{channel}/leave");
+    let (status, _) = call(&server.app, Method::POST, &uri, &token, None).await;
+    assert!(status.is_success(), "{status}");
+    let frame = wait_close(&mut ws, tick * 5).await;
+    assert_eq!(frame.reason.as_str(), "not a channel member");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn hello_with_too_many_channels_closes(pool: PgPool) {
+    let server = serve(pool.clone()).await;
+    let token = user(&pool, "a@x.io").await;
+    let mut ws = connect(&server, &token).await.unwrap();
+    let channels = (0..65).map(|_| Uuid::new_v4()).collect();
+    hello(&mut ws, Some("bot"), None, channels).await;
+    let frame = wait_close(&mut ws, WAIT).await;
+    assert_eq!(
+        frame.code,
+        tungstenite::protocol::frame::coding::CloseCode::Policy
+    );
+    assert_eq!(frame.reason.as_str(), "too many channels");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn post_survives_request_cancellation(pool: PgPool) {
+    let server = serve(pool.clone()).await;
+    let token = user(&pool, "a@x.io").await;
+    let channel = new_channel(&server.app, &token).await;
+    let mut ws = connect(&server, &token).await.unwrap();
+    hello(&mut ws, Some("bot"), None, vec![channel]).await;
+    assert_eq!(next_event(&mut ws).await, WsEvent::Subscribed);
+
+    // Hold the channel's advisory lock so the post parks inside its critical section.
+    let lock = "select pg_advisory_lock(hashtext($1::uuid::text))";
+    let mut blocker = pool.acquire().await.unwrap();
+    sqlx::query(lock)
+        .bind(channel)
+        .execute(&mut *blocker)
+        .await
+        .unwrap();
+    let body = serde_json::json!({
+        "body": "survives", "sender_type": "human", "sender_name": "alice"
+    });
+    let uri = format!("/api/channels/{channel}/messages");
+    let post = call(
+        &server.app,
+        Method::POST,
+        &uri,
+        &token,
+        Some(body.to_string()),
+    );
+    let parked = async {
+        loop {
+            let waiting: i64 = sqlx::query_scalar(
+                "select count(*) from pg_locks l join pg_database d on d.oid = l.database
+                 where l.locktype = 'advisory' and not l.granted and d.datname = current_database()",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            if waiting == 1 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    };
+    // Dropping `post` here is what axum does when the HTTP client disconnects.
+    tokio::select! {
+        _ = post => panic!("post finished while the lock was held"),
+        parked = timeout(WAIT, parked) => parked.expect("post never reached the lock"),
+    }
+    sqlx::query("select pg_advisory_unlock(hashtext($1::uuid::text))")
+        .bind(channel)
+        .execute(&mut *blocker)
+        .await
+        .unwrap();
+
+    match next_event(&mut ws).await {
+        WsEvent::Message { message } => assert_eq!(message.body, "survives"),
+        other => panic!("expected message, got {other:?}"),
+    }
+}

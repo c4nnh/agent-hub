@@ -1,4 +1,12 @@
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+/// Short code that `ah auth` prints and the hub's login page shows, so the user can check that
+/// the browser login belongs to their terminal. Format `A1B2-C3D4`.
+pub fn user_code(code: &str) -> String {
+    let hex = format!("{:X}", Sha256::digest(code.as_bytes()));
+    format!("{}-{}", &hex[..4], &hex[4..8])
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthPollResponse {
@@ -141,4 +149,19 @@ pub struct UpsertContext {
 pub struct ContextHit {
     pub entry: ContextEntrySummary,
     pub score: f32,
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn user_code_is_two_groups_of_four_upper_hex() {
+        let c = super::user_code("00000000-0000-0000-0000-000000000001");
+        assert_eq!(c.len(), 9);
+        assert_eq!(&c[4..5], "-");
+        assert!(
+            c.chars()
+                .all(|ch| ch == '-' || ch.is_ascii_digit() || ch.is_ascii_uppercase())
+        );
+        assert_eq!(c, super::user_code("00000000-0000-0000-0000-000000000001"));
+    }
 }

@@ -28,6 +28,7 @@ pub fn app(state: AppState) -> Router {
         .route("/api/invitations", get(channels::list_invitations))
         .route("/api/invitations/{id}/respond", post(channels::respond))
         .route("/auth/start", get(auth::google_start))
+        .route("/auth/confirm", post(auth::google_confirm))
         .route("/auth/callback", get(auth::google_callback))
         .with_state(state)
 }

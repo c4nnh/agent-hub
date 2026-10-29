@@ -24,6 +24,11 @@ pub async fn run_auth(
     let code = uuid::Uuid::new_v4().to_string();
     client.auth_start(&code).await?;
     let url = client.url(&format!("/auth/start?code={code}"));
+    writeln!(
+        out,
+        "Verification code: {} — confirm it matches in the browser.",
+        ah_common::user_code(&code)
+    )?;
     if no_browser || open::that(&url).is_err() {
         writeln!(out, "Open this URL to log in:\n{url}")?;
     } else {

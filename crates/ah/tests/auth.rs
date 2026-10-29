@@ -29,7 +29,9 @@ async fn spawn_hub(pool: PgPool) -> String {
         )
         .route(
             "/userinfo",
-            get(|| async { Json(serde_json::json!({"email": "a@b.co", "name": "Ann"})) }),
+            get(|| async {
+                Json(serde_json::json!({"email": "a@b.co", "email_verified": true, "name": "Ann"}))
+            }),
         );
     let gl = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let google_url = format!("http://{}", gl.local_addr().unwrap());
@@ -67,8 +69,9 @@ impl Write for SharedBuf {
     }
 }
 
-/// Runs `ah auth --no-browser` while a helper plays the browser: it reads the printed
-/// URL, GETs it (hub redirects to Google), then completes the Google callback.
+/// Runs `ah auth --no-browser` while a helper plays the browser: it reads the printed URL, GETs
+/// the confirm page, checks it shows the printed verification code, confirms (hub redirects to
+/// Google), then completes the Google callback.
 async fn login(hub: &str, dir: &Path) -> String {
     let cfg = CliConfig {
         hub_url: hub.to_string(),
@@ -87,9 +90,25 @@ async fn login(hub: &str, dir: &Path) -> String {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .unwrap();
-        let res = http.get(&url).send().await.unwrap();
-        assert!(res.status().is_redirection());
+        let page = http.get(&url).send().await.unwrap();
+        assert!(page.status().is_success());
+        let page = page.text().await.unwrap();
         let (base, code) = url.split_once("/auth/start?code=").unwrap();
+        let printed = String::from_utf8(seen.0.lock().unwrap().clone()).unwrap();
+        let user_code = ah_common::user_code(code);
+        assert!(
+            printed.contains(&format!("Verification code: {user_code}")),
+            "{printed}"
+        );
+        assert!(page.contains(&user_code), "{page}");
+        let res = http
+            .post(format!("{base}/auth/confirm"))
+            .header("origin", "http://hub.test")
+            .form(&[("code", code)])
+            .send()
+            .await
+            .unwrap();
+        assert!(res.status().is_redirection());
         let cb = format!("{base}/auth/callback?code=gc&state={code}");
         let res = http.get(&cb).send().await.unwrap();
         assert!(res.status().is_success());

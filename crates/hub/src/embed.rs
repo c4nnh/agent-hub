@@ -4,14 +4,14 @@ pub const DIMS: usize = 384;
 
 pub trait Embedder: Send + Sync {
     /// Returns a DIMS-length vector for the text.
-    fn embed(&self, text: &str) -> Vec<f32>;
+    fn embed(&self, text: &str) -> Result<Vec<f32>, String>;
 }
 
 /// Deterministic test embedder: each byte trigram is hashed into a bucket, then L2-normalized.
 pub struct HashEmbedder;
 
 impl Embedder for HashEmbedder {
-    fn embed(&self, text: &str) -> Vec<f32> {
+    fn embed(&self, text: &str) -> Result<Vec<f32>, String> {
         let bytes = text.as_bytes();
         let mut v = vec![0f32; DIMS];
         let mut add = |window: &[u8]| {
@@ -32,10 +32,10 @@ impl Embedder for HashEmbedder {
         let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
         if norm == 0.0 {
             v[0] = 1.0;
-            return v;
+            return Ok(v);
         }
         v.iter_mut().for_each(|x| *x /= norm);
-        v
+        Ok(v)
     }
 }
 
@@ -54,9 +54,12 @@ impl FastEmbedder {
 }
 
 impl Embedder for FastEmbedder {
-    fn embed(&self, text: &str) -> Vec<f32> {
-        let mut model = self.0.lock().expect("embedder lock");
-        let mut out = model.embed([text], None).expect("embed text");
-        out.remove(0)
+    fn embed(&self, text: &str) -> Result<Vec<f32>, String> {
+        // A panic inside fastembed must not disable embedding for the life of the process.
+        let mut model = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let out = model.embed([text], None).map_err(|e| e.to_string())?;
+        out.into_iter()
+            .next()
+            .ok_or_else(|| "embedder returned no vector".to_string())
     }
 }

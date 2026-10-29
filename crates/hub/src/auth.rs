@@ -2,9 +2,9 @@ use crate::state::AppState;
 use ah_common::{AuthPollResponse, MeResponse};
 use axum::{
     Json,
-    extract::{FromRequestParts, Query, State},
+    extract::{Form, FromRequestParts, Query, State},
     http::{HeaderMap, StatusCode, header, request::Parts},
-    response::{IntoResponse, Redirect, Response},
+    response::{Html, IntoResponse, Redirect, Response},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use rand::RngCore;
@@ -38,20 +38,28 @@ pub async fn issue_token(pool: &PgPool, user_id: Uuid) -> Result<String, sqlx::E
     Ok(token)
 }
 
-pub async fn authenticate(pool: &PgPool, bearer: &str) -> Option<User> {
-    let found = sqlx::query_as::<_, User>(
+/// `Ok(None)` for an unknown or revoked token. A database error is an `Err`, so callers do not
+/// mistake an outage for a revoked token.
+pub async fn authenticate(pool: &PgPool, bearer: &str) -> Result<Option<User>, sqlx::Error> {
+    sqlx::query_as::<_, User>(
         "select u.id, u.email, u.name, u.plan from tokens t join users u on u.id = t.user_id where t.token_hash = $1",
     )
     .bind(hash_token(bearer))
     .fetch_optional(pool)
-    .await;
-    match found {
-        Ok(user) => user,
-        Err(error) => {
-            tracing::error!(%error, "token lookup failed");
-            None
-        }
-    }
+    .await
+}
+
+/// First 8 hex chars of the secret's sha256: enough to correlate log lines, useless to replay.
+fn log_id(secret: &str) -> String {
+    hash_token(secret)[..8].to_string()
+}
+
+/// CLI codes are UUIDs; anything outside this alphabet is rejected before it reaches HTML.
+fn valid_code(code: &str) -> bool {
+    (32..=128).contains(&code.len())
+        && code
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 fn bearer(headers: &HeaderMap) -> Option<&str> {
@@ -72,7 +80,7 @@ impl FromRequestParts<AppState> for CurrentUser {
             tracing::warn!("missing bearer token");
             return Err(StatusCode::UNAUTHORIZED);
         };
-        let user = authenticate(&state.pool, token).await;
+        let user = authenticate(&state.pool, token).await.map_err(internal)?;
         match user {
             Some(user) => Ok(CurrentUser(user)),
             None => {
@@ -97,7 +105,7 @@ pub async fn cli_start(
     State(s): State<AppState>,
     Json(body): Json<StartBody>,
 ) -> Result<StatusCode, StatusCode> {
-    if body.code.len() < 32 || body.code.len() > 128 {
+    if !valid_code(&body.code) {
         tracing::warn!(len = body.code.len(), "invalid cli auth code");
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -130,10 +138,49 @@ pub struct CodeQuery {
     code: String,
 }
 
-pub async fn google_start(
+const START_PAGE: &str = r#"<!doctype html>
+<html><head><meta charset="utf-8"><title>Agent Hub login</title></head>
+<body style="font-family:sans-serif;max-width:32em;margin:3em auto">
+<h1>Agent Hub login</h1>
+<p>Check that this code matches the one <code>ah auth</code> printed in your terminal:</p>
+<p style="font-size:2em;font-family:monospace">{USER_CODE}</p>
+<p>If it does not match, or you did not run <code>ah auth</code>, close this tab.</p>
+<form method="post" action="/auth/confirm">
+<input type="hidden" name="code" value="{CODE}">
+<button type="submit">This code matches my terminal</button>
+</form>
+</body></html>"#;
+
+/// Shows the user code so the user can check it against their terminal before signing in. A link
+/// from someone else's `ah auth` shows a code the user never saw, so they stop here.
+pub async fn google_start(Query(q): Query<CodeQuery>) -> Result<Response, StatusCode> {
+    if !valid_code(&q.code) {
+        tracing::warn!(len = q.code.len(), "invalid auth start code");
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let page = START_PAGE
+        .replace("{USER_CODE}", &ah_common::user_code(&q.code))
+        .replace("{CODE}", &q.code);
+    Ok(([(header::X_FRAME_OPTIONS, "DENY")], Html(page)).into_response())
+}
+
+/// The confirm button on the start page. Requires a same-origin POST so another site cannot
+/// submit the form on the user's behalf and skip the code check.
+pub async fn google_confirm(
     State(s): State<AppState>,
-    Query(q): Query<CodeQuery>,
+    headers: HeaderMap,
+    Form(q): Form<CodeQuery>,
 ) -> Result<Redirect, StatusCode> {
+    let origin = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok());
+    let is_same_origin = origin == Some(s.cfg.public_url.trim_end_matches('/'));
+    if !is_same_origin {
+        tracing::warn!(origin = ?origin, "auth confirm from foreign origin");
+        return Err(StatusCode::FORBIDDEN);
+    }
+    if !valid_code(&q.code) {
+        tracing::warn!(len = q.code.len(), "invalid auth confirm code");
+        return Err(StatusCode::BAD_REQUEST);
+    }
     let redirect_uri = format!("{}/auth/callback", s.cfg.public_url);
     let mut url = reqwest::Url::parse(&s.cfg.google_auth_url()).map_err(internal)?;
     url.query_pairs_mut()
@@ -142,7 +189,8 @@ pub async fn google_start(
         .append_pair("response_type", "code")
         .append_pair("scope", "openid email profile")
         .append_pair("state", &q.code);
-    Ok(Redirect::temporary(url.as_str()))
+    // 303 so the browser follows with GET; 307 would re-POST the form to Google.
+    Ok(Redirect::to(url.as_str()))
 }
 
 #[derive(Deserialize)]
@@ -159,6 +207,8 @@ struct GoogleToken {
 #[derive(Deserialize)]
 struct GoogleUser {
     email: String,
+    #[serde(default)]
+    email_verified: bool,
     #[serde(default)]
     name: String,
 }
@@ -201,13 +251,17 @@ pub async fn google_callback(
             .await
             .map_err(internal)?;
     if pending != Some(true) {
-        tracing::warn!(state = %q.state, "auth request not found or already completed");
+        tracing::warn!(state_id = %log_id(&q.state), "auth request not found or already completed");
         return Err(StatusCode::BAD_REQUEST);
     }
     let gu = google_user(&s, &q.code).await.map_err(|error| {
         tracing::error!(%error, "google exchange failed");
         StatusCode::BAD_GATEWAY
     })?;
+    if !gu.email_verified {
+        tracing::warn!(state_id = %log_id(&q.state), "google email not verified");
+        return Err(StatusCode::FORBIDDEN);
+    }
     let user_id: Uuid = sqlx::query_scalar(
         "insert into users (id, email, name) values ($1, $2, $3)
          on conflict (email) do update set name = excluded.name returning id",
@@ -246,6 +300,7 @@ pub async fn cli_poll(
     };
     let user = authenticate(&s.pool, &token)
         .await
+        .map_err(internal)?
         .ok_or_else(|| internal("issued token has no user"))?;
     Ok(Json(AuthPollResponse {
         token,
