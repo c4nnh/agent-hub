@@ -310,10 +310,11 @@ async fn cursor_stop_delivers_once_and_shares_the_cursor(pool: PgPool) {
     let text = stop().await;
     let v: serde_json::Value = serde_json::from_str(text.trim_end()).unwrap();
     let msg = v["followup_message"].as_str().unwrap();
-    assert!(
-        msg.starts_with("new message from ann in #team: please review\n"),
-        "{msg}"
+    let want = format!(
+        "{}\nnew message from ann in #team: please review\n",
+        hooks::CURSOR_FOLLOWUP_OPEN
     );
+    assert!(msg.starts_with(&want), "{msg}");
     assert!(msg.ends_with(hooks::CURSOR_FOLLOWUP_CLOSE), "{msg}");
     let advanced = Cursors::load_folder(e.cfg.path(), &folder).unwrap()[&e.channel];
     assert!(advanced > seeded);
@@ -324,4 +325,71 @@ async fn cursor_stop_delivers_once_and_shares_the_cursor(pool: PgPool) {
     let got = wait_once(&e).await.unwrap();
     let bodies: Vec<_> = got.iter().map(|m| m["body"].as_str().unwrap()).collect();
     assert_eq!(bodies, vec!["next"]);
+}
+
+#[sqlx::test(migrations = "../hub/migrations")]
+async fn cursor_stop_skips_dropped_followups_and_caps_size(pool: PgPool) {
+    use ah::{cursors::Cursors, hooks};
+    let e = env(&pool).await;
+    let folder = Bindings::key(e.folder.path()).unwrap();
+    // A file:// root resolves like the plain path.
+    let root: std::path::PathBuf = format!("file://{}", e.folder.path().display()).into();
+    let stop = |status: &str, loop_count: u32| {
+        let input = hooks::HookInput {
+            workspace_roots: vec![root.clone()],
+            status: Some(status.into()),
+            loop_count: Some(loop_count),
+            ..Default::default()
+        };
+        let (cfg, c) = (e.cfg.path().to_path_buf(), &e.c);
+        async move {
+            let mut out = Vec::new();
+            hooks::run_cursor_stop(&cfg, Some(c), &input, &mut out)
+                .await
+                .unwrap();
+            String::from_utf8(out).unwrap()
+        }
+    };
+    let cursor = || Cursors::load_folder(e.cfg.path(), &folder).unwrap()[&e.channel];
+    assert_eq!(stop("completed", 0).await, ""); // seeds
+    let seeded = cursor();
+
+    let mut ids = Vec::new();
+    for i in 1..=25 {
+        let m = PostMessage {
+            body: format!("m{i}"),
+            reply_to: None,
+            mentions: vec![],
+            sender_type: SenderType::Agent,
+            sender_name: "ann".into(),
+        };
+        ids.push(e.c.post_message(e.channel, &m).await.unwrap().id);
+    }
+
+    // Cursor would drop these follow-ups: silent, cursor untouched.
+    assert_eq!(stop("aborted", 0).await, "");
+    assert_eq!(stop("error", 0).await, "");
+    assert_eq!(stop("completed", hooks::CURSOR_LOOP_LIMIT).await, "");
+    assert_eq!(cursor(), seeded);
+
+    // 25 pending: 20 lines, a "5 more" line, cursor at the 20th.
+    let text = stop("completed", 0).await;
+    let v: serde_json::Value = serde_json::from_str(text.trim_end()).unwrap();
+    let msg = v["followup_message"].as_str().unwrap();
+    let announced = msg.lines().filter(|l| l.starts_with("new message")).count();
+    assert_eq!(announced, hooks::CURSOR_FOLLOWUP_MAX);
+    assert!(msg.contains("and 5 more pending"), "{msg}");
+    assert_eq!(cursor(), ids[19]);
+
+    // The next stop delivers the remaining 5.
+    let text = stop("completed", 1).await;
+    let v: serde_json::Value = serde_json::from_str(text.trim_end()).unwrap();
+    let msg = v["followup_message"].as_str().unwrap();
+    let bodies: Vec<_> = msg
+        .lines()
+        .filter_map(|l| l.strip_prefix("new message from ann in #team: "))
+        .collect();
+    assert_eq!(bodies, vec!["m21", "m22", "m23", "m24", "m25"]);
+    assert!(!msg.contains("more pending"), "{msg}");
+    assert_eq!(cursor(), ids[24]);
 }

@@ -287,7 +287,9 @@ fn cursor_fresh_install_then_idempotent() {
     let v = cursor_doc(&cursor);
     assert_eq!(
         v,
-        json!({"version": 1, "hooks": {"stop": [{"command": "ah hook cursor-stop"}]}})
+        json!({"version": 1, "hooks": {"stop": [
+            {"command": "ah hook cursor-stop", "loop_limit": hooks::CURSOR_LOOP_LIMIT}
+        ]}})
     );
 
     let before = std::fs::read(cursor.join("hooks.json")).unwrap();
@@ -414,6 +416,7 @@ async fn cursor_stop_silent_when_unbound_or_offline() {
         vec![],
         vec![other.path().to_path_buf()],
         vec![folder.path().to_path_buf()],
+        vec![format!("file://{}", folder.path().display()).into()],
     ] {
         let input = HookInput {
             workspace_roots: roots,
