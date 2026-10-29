@@ -1,4 +1,4 @@
-use crate::{auth, state::AppState};
+use crate::{auth, channels, state::AppState};
 use axum::{
     Router,
     routing::{get, post},
@@ -10,6 +10,11 @@ pub fn app(state: AppState) -> Router {
         .route("/api/auth/cli/poll", get(auth::cli_poll))
         .route("/api/auth/logout", post(auth::logout))
         .route("/api/me", get(auth::me))
+        .route("/api/channels", get(channels::list).post(channels::create))
+        .route("/api/channels/{id}/leave", post(channels::leave))
+        .route("/api/channels/{id}/invitations", post(channels::invite))
+        .route("/api/invitations", get(channels::list_invitations))
+        .route("/api/invitations/{id}/respond", post(channels::respond))
         .route("/auth/start", get(auth::google_start))
         .route("/auth/callback", get(auth::google_callback))
         .with_state(state)
