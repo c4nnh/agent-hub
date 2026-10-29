@@ -56,8 +56,9 @@ pub async fn list(
     State(s): State<AppState>,
     CurrentUser(u): CurrentUser,
 ) -> Result<Json<Vec<ChannelSummary>>, StatusCode> {
-    let rows: Vec<(Uuid, String, String, String)> = sqlx::query_as(
-        "select c.id, c.name, m.role, o.email
+    let rows: Vec<(Uuid, String, String, String, i64)> = sqlx::query_as(
+        "select c.id, c.name, m.role, o.email,
+                coalesce((select max(x.id) from messages x where x.channel_id = c.id), 0)
          from channel_members m
          join channels c on c.id = m.channel_id
          join users o on o.id = c.owner_id
@@ -70,12 +71,15 @@ pub async fn list(
     .map_err(internal)?;
     Ok(Json(
         rows.into_iter()
-            .map(|(id, name, role, owner_email)| ChannelSummary {
-                id,
-                name,
-                role,
-                owner_email,
-            })
+            .map(
+                |(id, name, role, owner_email, last_message_id)| ChannelSummary {
+                    id,
+                    name,
+                    role,
+                    owner_email,
+                    last_message_id,
+                },
+            )
             .collect(),
     ))
 }
@@ -122,6 +126,7 @@ pub async fn create(
             name,
             role: "owner".into(),
             owner_email: u.email,
+            last_message_id: 0,
         }),
     ))
 }

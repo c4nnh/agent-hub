@@ -87,7 +87,7 @@ pub(crate) fn check_close(frame: &tungstenite::Message) -> Result<(), Refused> {
 
 /// Removes control characters (terminal escapes among them) so a message cannot rewrite the
 /// user's terminal; newlines and tabs become spaces to keep one message per line.
-fn sanitize(text: &str) -> String {
+pub fn sanitize(text: &str) -> String {
     text.chars()
         .filter_map(|c| match c {
             '\n' | '\r' | '\t' => Some(' '),

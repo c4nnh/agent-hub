@@ -7,14 +7,14 @@ pub mod wsclient;
 use crate::{
     bindings::Bindings,
     client::{ClientError, HubClient},
-    commands::chat::fetch_since,
     config::{CliConfig, Credentials},
+    cursors::Cursors,
 };
 use ah_common::{ChannelSummary, Message};
 use rmcp::ServiceExt;
 use std::{
-    collections::{HashMap, VecDeque},
-    path::Path,
+    collections::{BTreeMap, HashMap, VecDeque},
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -43,6 +43,8 @@ pub struct Session {
     pub client: HubClient,
     pub agent_name: String,
     pub folder: String,
+    /// Config dir holding the shared cursor file.
+    dir: PathBuf,
     pub extra_folders: Vec<String>,
     /// Joined channels bound to the folder; empty means unbound.
     pub channels: Vec<ChannelSummary>,
@@ -51,11 +53,13 @@ pub struct Session {
 }
 
 impl Session {
-    /// Resolves the folder binding and records the latest message id of each joined channel, so
-    /// everything posted after this call reaches the inbox.
+    /// Resolves the folder binding and takes each channel's cursor from the shared cursor file,
+    /// so everything posted since the folder joined reaches the inbox. A channel without an entry
+    /// starts at its current tail, and that seed is written back so `ah wait` agrees.
     pub async fn start(
         client: HubClient,
         bindings: &Bindings,
+        dir: &Path,
         cwd: &Path,
         agent_name: String,
     ) -> Result<Arc<Self>, ClientError> {
@@ -68,17 +72,25 @@ impl Session {
                 .filter(|c| binding.channel_ids.contains(&c.id))
                 .collect();
         }
-        let mut cursors = HashMap::new();
-        for ch in &channels {
-            // ponytail: pages the whole history once per start; a latest-id endpoint would cut it.
-            let history = fetch_since(&client, ch.id, 0).await?;
-            cursors.insert(ch.id, history.last().map_or(0, |m| m.id));
-        }
         let folder = Bindings::key(cwd).unwrap_or_else(|_| cwd.to_string_lossy().into_owned());
+        let stored = Cursors::load_folder(dir, &folder).unwrap_or_else(|error| {
+            tracing::warn!(%error, "cursor file unreadable, starting at the channel tails");
+            BTreeMap::new()
+        });
+        let seeds: BTreeMap<Uuid, i64> =
+            channels.iter().map(|c| (c.id, c.last_message_id)).collect();
+        let cursors: HashMap<Uuid, i64> = seeds
+            .iter()
+            .map(|(id, tail)| (*id, stored.get(id).copied().unwrap_or(*tail)))
+            .collect();
+        if let Err(error) = Cursors::seed(dir, &folder, &seeds) {
+            tracing::warn!(%error, "could not write cursors");
+        }
         Ok(Arc::new(Self {
             client,
             agent_name,
             folder,
+            dir: dir.to_path_buf(),
             extra_folders: binding.extra_folders,
             channels,
             inbox: Mutex::new(Inbox {
@@ -145,16 +157,30 @@ impl Session {
         self.lock().feed_stopped.clone()
     }
 
+    /// Takes everything queued. A non-empty batch is delivered, so the cursors are saved to the
+    /// shared file; the snapshot is taken with the drain so it never runs ahead of the batch.
+    fn take(&self) -> (Vec<Message>, bool) {
+        let (drained, is_stopped, snapshot) = {
+            let mut inbox = self.lock();
+            let drained: Vec<Message> = inbox.queue.drain(..).collect();
+            let snapshot: BTreeMap<Uuid, i64> =
+                inbox.cursors.iter().map(|(k, v)| (*k, *v)).collect();
+            (drained, inbox.feed_stopped.is_some(), snapshot)
+        };
+        if !drained.is_empty()
+            && let Err(error) = Cursors::advance(&self.dir, &self.folder, &snapshot)
+        {
+            tracing::warn!(%error, "could not save cursors; messages may repeat");
+        }
+        (drained, is_stopped)
+    }
+
     /// Everything queued, waiting up to `timeout` for the first message. Empty on timeout, or at
     /// once when the feed has stopped.
     pub async fn wait(&self, timeout: Duration) -> Vec<Message> {
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
-            let (drained, is_stopped) = {
-                let mut inbox = self.lock();
-                let drained: Vec<Message> = inbox.queue.drain(..).collect();
-                (drained, inbox.feed_stopped.is_some())
-            };
+            let (drained, is_stopped) = self.take();
             if !drained.is_empty() || is_stopped {
                 return drained;
             }
@@ -162,7 +188,7 @@ impl Session {
             // still wakes this call.
             let woke = tokio::time::timeout_at(deadline, self.arrived.notified()).await;
             if woke.is_err() {
-                return self.lock().queue.drain(..).collect();
+                return self.take().0;
             }
         }
     }
@@ -222,7 +248,7 @@ pub async fn run(
         None => std::env::current_dir()?,
     };
     let agent_name = name.unwrap_or_else(|| default_agent_name(&cwd));
-    let session = Session::start(client, &bindings, &cwd, agent_name).await?;
+    let session = Session::start(client, &bindings, dir, &cwd, agent_name).await?;
     let _ws = wsclient::spawn(session.clone(), wsclient::BACKOFF_START);
     let server = tools::AgentHub::new(session)
         .serve(rmcp::transport::stdio())

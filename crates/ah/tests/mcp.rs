@@ -1,6 +1,10 @@
 use ah::{
     bindings::{Binding, Bindings},
     client::HubClient,
+    commands::{
+        channel::run_join,
+        wait::{WaitArgs, run_wait},
+    },
     mcp::{Session, tools::AgentHub, wsclient},
 };
 use ah_common::ChannelSummary;
@@ -75,11 +79,23 @@ struct Harness {
     session: Arc<Session>,
     ws: tokio::task::JoinHandle<()>,
     mcp: RunningService<RoleClient, ()>,
-    _dir: tempfile::TempDir,
+    /// Config dir (bindings, cursors) and the bound folder.
+    cfg: tempfile::TempDir,
+    dir: tempfile::TempDir,
 }
 
 async fn harness(token_owner: HubClient, channels: &[&ChannelSummary]) -> Harness {
+    let cfg = tempfile::tempdir().unwrap();
     let dir = tempfile::tempdir().unwrap();
+    harness_in(cfg, dir, token_owner, channels).await
+}
+
+async fn harness_in(
+    cfg: tempfile::TempDir,
+    dir: tempfile::TempDir,
+    token_owner: HubClient,
+    channels: &[&ChannelSummary],
+) -> Harness {
     let mut bindings = Bindings::default();
     bindings.0.insert(
         Bindings::key(dir.path()).unwrap(),
@@ -90,7 +106,7 @@ async fn harness(token_owner: HubClient, channels: &[&ChannelSummary]) -> Harnes
     );
     let session = tokio::time::timeout(
         LIMIT,
-        Session::start(token_owner, &bindings, dir.path(), AGENT.into()),
+        Session::start(token_owner, &bindings, cfg.path(), dir.path(), AGENT.into()),
     )
     .await
     .unwrap()
@@ -111,7 +127,8 @@ async fn harness(token_owner: HubClient, channels: &[&ChannelSummary]) -> Harnes
         session,
         ws,
         mcp,
-        _dir: dir,
+        cfg,
+        dir,
     }
 }
 
@@ -424,4 +441,61 @@ async fn revoked_token_stops_wait_with_reason(pool: PgPool) {
     let body = text(&r);
     assert!(body.contains("message feed stopped"), "{body}");
     assert!(body.contains("ah auth"), "{body}");
+}
+
+/// Live bug: a session started after a send used to begin at "now" and miss it.
+#[sqlx::test(migrations = "../hub/migrations")]
+async fn session_started_after_send_delivers_since_join(pool: PgPool) {
+    let hub = spawn_hub(pool.clone(), HubMode::Open).await;
+    let a = user(&pool, &hub, "a@b.co").await;
+    let ch = a.create_channel("team").await.unwrap();
+    post_human(&a, &ch, "before join").await;
+    let cfg = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    run_join(cfg.path(), &a, dir.path(), Some("team"), &mut Vec::new())
+        .await
+        .unwrap();
+    post_human(&a, &ch, "sent before the session").await;
+
+    let h = harness_in(cfg, dir, a, &[&ch]).await;
+    let body = text(&call(&h, "wait_for_message", json!({"timeout_secs": 5})).await);
+    assert!(
+        body.starts_with("new message from ann in #team: sent before the session\n"),
+        "{body}"
+    );
+    assert!(body.contains("\"channel\":\"team\""), "{body}");
+    assert!(!body.contains("before join"), "{body}");
+}
+
+#[sqlx::test(migrations = "../hub/migrations")]
+async fn wait_delivery_advances_shared_cursor(pool: PgPool) {
+    let hub = spawn_hub(pool.clone(), HubMode::Open).await;
+    let a = user(&pool, &hub, "a@b.co").await;
+    let ch = a.create_channel("team").await.unwrap();
+    let cfg = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    run_join(cfg.path(), &a, dir.path(), Some("team"), &mut Vec::new())
+        .await
+        .unwrap();
+    post_human(&a, &ch, "once only").await;
+
+    let h = harness_in(cfg, dir, a, &[&ch]).await;
+    let body = text(&call(&h, "wait_for_message", json!({"timeout_secs": 5})).await);
+    assert!(body.contains("once only"), "{body}");
+
+    // `ah wait` on the same folder must not print what the MCP session already delivered.
+    let args = WaitArgs {
+        folder: Some(h.dir.path().to_path_buf()),
+        channel: None,
+        name: Some("waiter".into()),
+        drain: None,
+    };
+    let mut out = Vec::new();
+    let second = tokio::time::timeout(
+        Duration::from_millis(800),
+        run_wait(h.cfg.path(), &h.session.client, args, &mut out),
+    )
+    .await;
+    assert!(second.is_err(), "ah wait returned {second:?}");
+    assert!(out.is_empty(), "{}", String::from_utf8_lossy(&out));
 }

@@ -8,6 +8,7 @@ use crate::{
         BACKOFF_MAX, BACKOFF_START, check_close, connect_subscribed, fetch_since, next_frame,
         refusal,
     },
+    cursors::Cursors,
     mcp::{UNBOUND, default_agent_name},
 };
 use ah_common::{ChannelSummary, ClientHello, Message, SenderType, WsEvent};
@@ -45,31 +46,6 @@ pub struct WaitArgs {
     /// Test hook: overrides the drain window.
     #[doc(hidden)]
     pub drain: Option<Duration>,
-}
-
-/// `{config_dir}/wait-cursors.json`: last seen message id per channel, per canonical folder.
-#[derive(Default, serde::Serialize, serde::Deserialize)]
-#[serde(transparent)]
-struct Cursors(BTreeMap<String, BTreeMap<Uuid, i64>>);
-
-impl Cursors {
-    fn file(dir: &Path) -> PathBuf {
-        dir.join("wait-cursors.json")
-    }
-
-    fn load(dir: &Path) -> std::io::Result<Self> {
-        match std::fs::read(Self::file(dir)) {
-            Ok(b) => serde_json::from_slice(&b).map_err(std::io::Error::other),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(e) => Err(e),
-        }
-    }
-
-    fn save(&self, dir: &Path) -> std::io::Result<()> {
-        let b = serde_json::to_vec_pretty(self).map_err(std::io::Error::other)?;
-        std::fs::create_dir_all(dir)?;
-        std::fs::write(Self::file(dir), b)
-    }
 }
 
 #[doc(hidden)] // public only so tests/wait.rs can exercise the buffer invariant
@@ -225,18 +201,12 @@ pub async fn run_wait(
         }
     };
 
-    let mut all_cursors = Cursors::load(dir)?;
-    let mut cursors = all_cursors.0.remove(&folder).unwrap_or_default();
+    let mut cursors = Cursors::load_folder(dir, &folder)?;
     for ch in &channels {
-        if let std::collections::btree_map::Entry::Vacant(slot) = cursors.entry(ch.id) {
-            // First run: history is onboarding's job, so start at the current tail.
-            // ponytail: pages the whole history once; a latest-id endpoint would cut it.
-            let history = refused(fetch_since(client, ch.id, 0).await)?;
-            slot.insert(history.last().map_or(0, |m| m.id));
-        }
+        // First run: history is onboarding's job, so start at the current tail.
+        cursors.entry(ch.id).or_insert(ch.last_message_id);
     }
-    all_cursors.0.insert(folder.clone(), cursors.clone());
-    all_cursors.save(dir)?;
+    Cursors::seed(dir, &folder, &cursors)?;
 
     let mut waiter = Waiter {
         client,
@@ -262,8 +232,7 @@ pub async fn run_wait(
         writeln!(out, "{line}")?;
     }
     out.flush()?;
-    all_cursors.0.insert(waiter.folder.clone(), waiter.cursors);
-    all_cursors.save(dir)?;
+    Cursors::advance(dir, &waiter.folder, &waiter.cursors)?;
     Ok(())
 }
 

@@ -246,3 +246,23 @@ async fn leave_removes_membership(pool: PgPool) {
         .unwrap();
     assert_eq!(left, 0);
 }
+
+#[sqlx::test(migrations = "./migrations")]
+async fn last_message_id_tracks_newest_post(pool: PgPool) {
+    let app = hub(pool.clone());
+    let t = user(&pool, "a@x.co").await;
+    let (_, b) = create(&app, &t, "dev").await;
+    let made: ChannelSummary = parse(&b);
+    assert_eq!(made.last_message_id, 0);
+    assert_eq!(channels(&app, &t).await[0].last_message_id, 0);
+
+    let uri = format!("/api/channels/{}/messages", made.id);
+    let body = r#"{"body":"hi","sender_type":"human","sender_name":"ann"}"#;
+    let mut newest = 0;
+    for _ in 0..2 {
+        let (s, b) = call(&app, Method::POST, &uri, &t, Some(body)).await;
+        assert_eq!(s, StatusCode::CREATED);
+        newest = parse::<ah_common::Message>(&b).id;
+    }
+    assert_eq!(channels(&app, &t).await[0].last_message_id, newest);
+}

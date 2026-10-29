@@ -1,6 +1,7 @@
 use crate::{
     bindings::Bindings,
     client::{ClientError, HubClient},
+    cursors::Cursors,
 };
 use ah_common::ChannelSummary;
 use dialoguer::{Confirm, Select};
@@ -70,11 +71,16 @@ pub async fn run_join(
 ) -> Res {
     let ch = pick_channel(client, channel).await?;
     let mut bindings = Bindings::load(dir)?;
-    let b = bindings.0.entry(Bindings::key(cwd)?).or_default();
+    let folder = Bindings::key(cwd)?;
+    let b = bindings.0.entry(folder.clone()).or_default();
     if !b.channel_ids.contains(&ch.id) {
         b.channel_ids.push(ch.id);
     }
     bindings.save(dir)?;
+    // Everything posted after this point counts as new for the folder, whenever it starts
+    // listening. An existing cursor is delivery history and stays.
+    let seed = std::collections::BTreeMap::from([(ch.id, ch.last_message_id)]);
+    Cursors::seed(dir, &folder, &seed)?;
     writeln!(out, "Bound {} to channel {}", cwd.display(), ch.name)?;
     writeln!(
         out,

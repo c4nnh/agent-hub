@@ -27,6 +27,9 @@ pub struct ChannelSummary {
     pub name: String,
     pub role: String,
     pub owner_email: String,
+    /// Id of the newest message in the channel, 0 when it has none. Absent on older hubs.
+    #[serde(default)]
+    pub last_message_id: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -4,6 +4,7 @@ use ah::{
     commands::channel::{
         ConfigArgs, run_config, run_create, run_invitation, run_invite, run_join, run_leave,
     },
+    cursors::Cursors,
 };
 use ah_hub::{
     auth::issue_token,
@@ -295,4 +296,34 @@ async fn config_folder_refuses_overwrite(pool: PgPool) {
     );
     assert!(r.unwrap_err().to_string().contains("already bound"));
     assert_eq!(Bindings::load(dir.path()).unwrap(), before);
+}
+
+#[sqlx::test(migrations = "../hub/migrations")]
+async fn join_seeds_cursor_once(pool: PgPool) {
+    let hub = spawn_hub(pool.clone()).await;
+    let c = client(&pool, &hub, "a@b.co").await;
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let folder = Bindings::key(cwd.path()).unwrap();
+    let ch = c.create_channel("team").await.unwrap();
+    c.post_human_message(ch.id, "ann", "old").await.unwrap();
+    let last = c
+        .post_human_message(ch.id, "ann", "older")
+        .await
+        .unwrap()
+        .id;
+
+    run_join(dir.path(), &c, cwd.path(), Some("team"), &mut Vec::new())
+        .await
+        .unwrap();
+    let seeded = Cursors::load_folder(dir.path(), &folder).unwrap();
+    assert_eq!(seeded.get(&ch.id), Some(&last));
+
+    // Joining again after more posts keeps the cursor: it marks delivery history.
+    c.post_human_message(ch.id, "ann", "newer").await.unwrap();
+    run_join(dir.path(), &c, cwd.path(), Some("team"), &mut Vec::new())
+        .await
+        .unwrap();
+    let again = Cursors::load_folder(dir.path(), &folder).unwrap();
+    assert_eq!(again.get(&ch.id), Some(&last));
 }

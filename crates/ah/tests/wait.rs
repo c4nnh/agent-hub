@@ -1,7 +1,10 @@
 use ah::{
     bindings::{Binding, Bindings},
     client::HubClient,
-    commands::wait::{Refusal, WaitArgs, Waiter, run_wait},
+    commands::{
+        channel::run_join,
+        wait::{Refusal, WaitArgs, Waiter, run_wait},
+    },
 };
 use ah_common::{PostMessage, SenderType};
 use ah_hub::{
@@ -244,4 +247,24 @@ async fn gap_check_keeps_messages_when_a_later_channel_fails(pool: PgPool) {
     assert!(w.gap_check().await.is_err());
     assert_eq!(w.pending.len(), 1);
     assert_eq!(w.pending[0].body, "on A");
+}
+
+/// A message sent after join but before the first `ah wait` run is delivered, not swallowed.
+#[sqlx::test(migrations = "../hub/migrations")]
+async fn message_after_join_before_first_wait_is_delivered(pool: PgPool) {
+    let e = env(&pool).await;
+    post(&e.c, e.channel, "other", "before join").await;
+    run_join(
+        e.cfg.path(),
+        &e.c,
+        e.folder.path(),
+        Some("team"),
+        &mut Vec::new(),
+    )
+    .await
+    .unwrap();
+    post(&e.c, e.channel, "other", "after join").await;
+    let got = wait_once(&e).await.unwrap();
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert_eq!(got[0]["body"], "after join");
 }
