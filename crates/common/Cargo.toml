@@ -1,0 +1,4 @@
+[package]
+name = "ah-common"
+version.workspace = true
+edition.workspace = true
