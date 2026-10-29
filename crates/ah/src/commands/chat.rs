@@ -15,13 +15,98 @@ const PAGE: i64 = 500;
 pub(crate) const SUBSCRIBE_TIMEOUT: Duration = Duration::from_secs(10);
 const BACKOFF_START: Duration = Duration::from_secs(1);
 pub(crate) const BACKOFF_MAX: Duration = Duration::from_secs(30);
+/// The hub pings every 30s, so a healthy socket never goes this long without a frame. Without
+/// it a half-open socket (laptop sleep, NAT drop) would block a read forever.
+pub(crate) const READ_TIMEOUT: Duration = Duration::from_secs(75);
+
+/// Next frame, or an error when the socket has been silent longer than `READ_TIMEOUT`.
+pub(crate) async fn next_frame<S>(
+    ws: &mut S,
+) -> Result<Option<tungstenite::Message>, Box<dyn std::error::Error + Send + Sync>>
+where
+    S: futures_util::Stream<Item = Result<tungstenite::Message, tungstenite::Error>> + Unpin,
+{
+    let frame = tokio::time::timeout(READ_TIMEOUT, ws.next())
+        .await
+        .map_err(|_| "no frame from hub within the read timeout")?;
+    Ok(frame.transpose()?)
+}
+
+/// The status of a hub refusal that retrying cannot fix: a 4xx from the REST API, a 401/403 on
+/// the websocket handshake, or a policy close (lost access) from the hub.
+pub(crate) fn refusal(e: &(dyn std::error::Error + 'static)) -> Option<String> {
+    if let Some(crate::client::ClientError::Status { status, .. }) = e.downcast_ref()
+        && (400..500).contains(status)
+    {
+        return Some(refusal_text(*status));
+    }
+    if let Some(tungstenite::Error::Http(res)) = e.downcast_ref()
+        && matches!(res.status().as_u16(), 401 | 403)
+    {
+        return Some(refusal_text(res.status().as_u16()));
+    }
+    if let Some(r) = e.downcast_ref::<Refused>() {
+        // The hub closes a live socket with this reason after logout or token revocation.
+        if r.0 == "token revoked" {
+            return Some(refusal_text(401));
+        }
+        return Some(r.to_string());
+    }
+    None
+}
+
+fn refusal_text(status: u16) -> String {
+    match status {
+        401 => "hub rejected the login token (401); run `ah auth` to log in again".into(),
+        403 => "hub denied access to the channel (403)".into(),
+        _ => format!("hub refused the request ({status})"),
+    }
+}
+
+/// A policy close from the hub: the token was revoked or a channel membership is gone.
+#[derive(Debug)]
+pub(crate) struct Refused(pub String);
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "hub closed the connection: {}", self.0)
+    }
+}
+
+impl std::error::Error for Refused {}
+
+/// Maps a close frame to `Refused` when it is a policy close.
+pub(crate) fn check_close(frame: &tungstenite::Message) -> Result<(), Refused> {
+    if let tungstenite::Message::Close(Some(c)) = frame
+        && c.code == tungstenite::protocol::frame::coding::CloseCode::Policy
+    {
+        return Err(Refused(c.reason.to_string()));
+    }
+    Ok(())
+}
+
+/// Removes control characters (terminal escapes among them) so a message cannot rewrite the
+/// user's terminal; newlines and tabs become spaces to keep one message per line.
+fn sanitize(text: &str) -> String {
+    text.chars()
+        .filter_map(|c| match c {
+            '\n' | '\r' | '\t' => Some(' '),
+            c if c.is_control() => None,
+            c => Some(c),
+        })
+        .collect()
+}
 
 pub fn render_message(msg: &Message) -> String {
     let prefix = match msg.sender_type {
         SenderType::Agent => ROBOT_PREFIX,
         SenderType::Human => "",
     };
-    format!("{prefix}{}: {}", msg.sender_name, msg.body)
+    format!(
+        "{prefix}{}: {}",
+        sanitize(&msg.sender_name),
+        sanitize(&msg.body)
+    )
 }
 
 /// All messages after `since_id`, following the hub's page cap.
@@ -56,10 +141,11 @@ fn print(out: &mut impl Write, msg: &Message, last_id: &mut i64) -> std::io::Res
 async fn session(
     client: &HubClient,
     channel: &ChannelSummary,
-    last_id: &mut i64,
+    cursor: &mut Cursor,
     backoff: &mut Duration,
     out: &mut impl Write,
 ) -> Res {
+    let last_id = &mut cursor.last_id;
     let (mut ws, _) = connect_async(client.ws_url()?).await?;
     let hello = ClientHello {
         agent_name: None,
@@ -75,6 +161,7 @@ async fn session(
                 .next()
                 .await
                 .ok_or("connection closed before subscribed")??;
+            check_close(&frame)?;
             if let tungstenite::Message::Text(t) = frame
                 && matches!(serde_json::from_str(&t), Ok(WsEvent::Subscribed))
             {
@@ -87,9 +174,8 @@ async fn session(
 
     // Subscribed means the connection is healthy, whether or not messages follow.
     *backoff = BACKOFF_START;
-    let is_first = *last_id == 0;
     let missed = fetch_since(client, channel.id, *last_id).await?;
-    let skip = if is_first {
+    let skip = if cursor.is_first {
         missed.len().saturating_sub(HISTORY_LINES)
     } else {
         0
@@ -102,11 +188,18 @@ async fn session(
             print(out, m, last_id)?;
         }
     }
+    // Only the first successful connect trims history; a reconnect replays the whole gap, even
+    // when the channel was empty before.
+    cursor.is_first = false;
     writeln!(out, "-- connected to {} --", channel.name)?;
     out.flush()?;
 
-    while let Some(frame) = ws.next().await {
-        let tungstenite::Message::Text(t) = frame? else {
+    while let Some(frame) = next_frame(&mut ws)
+        .await
+        .map_err(|e| e as Box<dyn std::error::Error>)?
+    {
+        check_close(&frame)?;
+        let tungstenite::Message::Text(t) = frame else {
             continue;
         };
         match serde_json::from_str(&t) {
@@ -120,21 +213,31 @@ async fn session(
     Ok(())
 }
 
-/// Runs until a non-retryable error (4xx from the hub); reconnects with backoff otherwise.
+/// Where the chat is in the channel. `is_first` is separate from `last_id == 0`: an empty channel
+/// also has id 0, and its reconnect must replay everything, not only the last lines.
+struct Cursor {
+    last_id: i64,
+    is_first: bool,
+}
+
+/// Runs until the hub refuses the connection (bad token, lost access); reconnects with backoff
+/// otherwise.
 pub async fn subscribe_loop(
     client: &HubClient,
     channel: &ChannelSummary,
     out: &mut impl Write,
 ) -> Res {
-    let mut last_id = 0;
+    let mut cursor = Cursor {
+        last_id: 0,
+        is_first: true,
+    };
     let mut backoff = BACKOFF_START;
     loop {
-        let result = session(client, channel, &mut last_id, &mut backoff, out).await;
+        let result = session(client, channel, &mut cursor, &mut backoff, out).await;
         if let Err(e) = &result
-            && let Some(crate::client::ClientError::Status { status, .. }) = e.downcast_ref()
-            && (400..500).contains(status)
+            && let Some(reason) = refusal(e.as_ref())
         {
-            return result;
+            return Err(reason.into());
         }
         match result {
             Ok(()) => eprintln!("connection closed; reconnecting in {backoff:?}"),

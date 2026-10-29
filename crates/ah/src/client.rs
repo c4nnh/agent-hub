@@ -24,7 +24,11 @@ impl HubClient {
         Self {
             hub_url: hub_url.trim_end_matches('/').to_string(),
             token,
-            http: reqwest::Client::new(),
+            // No hub call is a long poll, so a stalled request is a dead connection.
+            http: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .expect("http client"),
         }
     }
 

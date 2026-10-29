@@ -9,6 +9,7 @@ use ah_hub::{
     config::{HubConfig, HubMode},
     routes::app,
     state::AppState,
+    ws::Registry,
 };
 use rmcp::{
     RoleClient, ServiceExt,
@@ -25,6 +26,10 @@ const BACKOFF: Duration = Duration::from_millis(50);
 const LIMIT: Duration = Duration::from_secs(10);
 
 async fn spawn_hub(pool: PgPool, mode: HubMode) -> String {
+    spawn_hub_with(pool, mode, Registry::default()).await
+}
+
+async fn spawn_hub_with(pool: PgPool, mode: HubMode, registry: Registry) -> String {
     let cfg = HubConfig {
         database_url: String::new(),
         hub_mode: mode,
@@ -33,11 +38,9 @@ async fn spawn_hub(pool: PgPool, mode: HubMode) -> String {
         public_url: "http://hub.test".into(),
         google_base_url: None,
     };
-    let router = app(AppState::new(
-        pool,
-        cfg,
-        Arc::new(ah_hub::embed::HashEmbedder),
-    ));
+    let mut state = AppState::new(pool, cfg, Arc::new(ah_hub::embed::HashEmbedder));
+    state.registry = registry;
+    let router = app(state);
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", l.local_addr().unwrap());
     tokio::spawn(async move { axum::serve(l, router).await.unwrap() });
@@ -50,6 +53,17 @@ async fn user(pool: &PgPool, hub: &str, email: &str) -> HubClient {
         .bind(id)
         .bind(email)
         .execute(pool)
+        .await
+        .unwrap();
+    let token = issue_token(pool, id).await.unwrap();
+    HubClient::new(hub.to_string(), Some(token))
+}
+
+/// Another token for an existing user, as a second `ah mcp` on the same machine would have.
+async fn same_user(pool: &PgPool, hub: &str, email: &str) -> HubClient {
+    let id: Uuid = sqlx::query_scalar("select id from users where email = $1")
+        .bind(email)
+        .fetch_one(pool)
         .await
         .unwrap();
     let token = issue_token(pool, id).await.unwrap();
@@ -360,4 +374,54 @@ async fn unbound_folder_tools_return_join_hint(pool: PgPool) {
     let r = call(&h, "wait_for_message", json!({"timeout_secs": 1})).await;
     assert!(is_error(&r));
     assert!(text(&r).contains("ah channel join"), "{}", text(&r));
+}
+
+#[sqlx::test(migrations = "../hub/migrations")]
+async fn two_sessions_same_name_both_receive(pool: PgPool) {
+    let hub = spawn_hub(pool.clone(), HubMode::Open).await;
+    let a = user(&pool, &hub, "a@b.co").await;
+    let a2 = same_user(&pool, &hub, "a@b.co").await;
+    let ch = a.create_channel("team").await.unwrap();
+    // Both sessions run under the same agent name, like two folders with an explicit --name.
+    let one = harness(a, &[&ch]).await;
+    let two = harness(a2, &[&ch]).await;
+
+    let sent = call(
+        &one,
+        "send_message",
+        json!({"channel": "team", "body": "from one"}),
+    )
+    .await;
+    assert!(!is_error(&sent), "{}", text(&sent));
+    let got = text(&call(&two, "wait_for_message", json!({"timeout_secs": 5})).await);
+    assert!(got.contains("from one"), "{got}");
+
+    call(
+        &two,
+        "send_message",
+        json!({"channel": "team", "body": "from two"}),
+    )
+    .await;
+    let got = text(&call(&one, "wait_for_message", json!({"timeout_secs": 5})).await);
+    assert!(got.contains("from two"), "{got}");
+    // Each session still filters its own sends.
+    assert!(!got.contains("from one"), "{got}");
+}
+
+#[sqlx::test(migrations = "../hub/migrations")]
+async fn revoked_token_stops_wait_with_reason(pool: PgPool) {
+    let registry = Registry::with_tuning(256, Duration::from_millis(100));
+    let hub = spawn_hub_with(pool.clone(), HubMode::Open, registry).await;
+    let a = user(&pool, &hub, "a@b.co").await;
+    let ch = a.create_channel("team").await.unwrap();
+    let h = harness(a, &[&ch]).await;
+
+    h.session.client.logout().await.unwrap();
+    let started = std::time::Instant::now();
+    let r = call(&h, "wait_for_message", json!({"timeout_secs": 30})).await;
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert!(is_error(&r), "{}", text(&r));
+    let body = text(&r);
+    assert!(body.contains("message feed stopped"), "{body}");
+    assert!(body.contains("ah auth"), "{body}");
 }

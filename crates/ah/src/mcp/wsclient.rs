@@ -1,9 +1,8 @@
 //! Websocket feed for the inbox, with reconnect and gap-fill.
 
 use super::Session;
-use crate::{
-    client::ClientError,
-    commands::chat::{BACKOFF_MAX, SUBSCRIBE_TIMEOUT, fetch_since},
+use crate::commands::chat::{
+    BACKOFF_MAX, SUBSCRIBE_TIMEOUT, check_close, fetch_since, next_frame, refusal,
 };
 use ah_common::{ClientHello, SenderType, WsEvent};
 use futures_util::{SinkExt, StreamExt};
@@ -14,7 +13,8 @@ pub const BACKOFF_START: Duration = Duration::from_secs(1);
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
-/// Runs the websocket loop until a 4xx from the hub. Does nothing for an unbound folder.
+/// Runs the websocket loop until the hub refuses the feed (4xx, rejected token, lost access),
+/// then records the reason on the session. Does nothing for an unbound folder.
 pub fn spawn(session: Arc<Session>, backoff_start: Duration) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         if !session.is_bound() {
@@ -24,10 +24,10 @@ pub fn spawn(session: Arc<Session>, backoff_start: Duration) -> tokio::task::Joi
         loop {
             let result = connection(&session, &mut backoff, backoff_start).await;
             if let Err(e) = &result
-                && let Some(ClientError::Status { status, .. }) = e.downcast_ref()
-                && (400..500).contains(status)
+                && let Some(reason) = refusal(e.as_ref())
             {
-                tracing::error!(status, error = %e, "hub refused the inbox feed, stopping");
+                tracing::error!(%reason, "hub refused the inbox feed, stopping");
+                session.stop_feed(reason);
                 return;
             }
             match result {
@@ -62,6 +62,7 @@ async fn connection(
                 .next()
                 .await
                 .ok_or("connection closed before subscribed")??;
+            check_close(&frame)?;
             if let tungstenite::Message::Text(t) = frame
                 && matches!(serde_json::from_str(&t), Ok(WsEvent::Subscribed))
             {
@@ -81,8 +82,9 @@ async fn connection(
         }
     }
 
-    while let Some(frame) = ws.next().await {
-        let tungstenite::Message::Text(t) = frame? else {
+    while let Some(frame) = next_frame(&mut ws).await? {
+        check_close(&frame)?;
+        let tungstenite::Message::Text(t) = frame else {
             continue;
         };
         match serde_json::from_str(&t) {

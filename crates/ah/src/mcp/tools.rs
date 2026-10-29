@@ -167,7 +167,9 @@ impl AgentHub {
                 sender_name: self.session.agent_name.clone(),
             };
             let sent = self.session.client.post_message(ch.id, &msg).await;
-            json(&sent.map_err(hub_error)?)
+            let sent = sent.map_err(hub_error)?;
+            self.session.record_sent(sent.id);
+            json(&sent)
         })
         .await
     }
@@ -185,6 +187,14 @@ impl AgentHub {
             .clamp(1, 300);
         self.run(async {
             let messages = self.session.wait(Duration::from_secs(secs)).await;
+            let stopped = self.session.feed_stopped();
+            if messages.is_empty()
+                && let Some(reason) = stopped
+            {
+                return Err(format!(
+                    "message feed stopped: {reason}. Restart the agent session after fixing it."
+                ));
+            }
             if messages.is_empty() {
                 return Ok(format!(
                     "no new messages within {secs}s; call wait_for_message again"
