@@ -1,5 +1,6 @@
-use ah_common::{AuthPollResponse, MeResponse};
+use ah_common::{AgentPresence, AuthPollResponse, ChannelSummary, InvitationSummary, MeResponse};
 use reqwest::{Response, StatusCode};
+use uuid::Uuid;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
@@ -79,6 +80,73 @@ impl HubClient {
 
     pub async fn me(&self) -> Result<MeResponse, ClientError> {
         let res = self.request(reqwest::Method::GET, "/api/me").send().await?;
+        Ok(Self::check(res).await?.json().await?)
+    }
+}
+
+impl HubClient {
+    pub async fn list_channels(&self) -> Result<Vec<ChannelSummary>, ClientError> {
+        let res = self
+            .request(reqwest::Method::GET, "/api/channels")
+            .send()
+            .await?;
+        Ok(Self::check(res).await?.json().await?)
+    }
+
+    pub async fn create_channel(&self, name: &str) -> Result<ChannelSummary, ClientError> {
+        let res = self
+            .request(reqwest::Method::POST, "/api/channels")
+            .json(&serde_json::json!({ "name": name }))
+            .send()
+            .await?;
+        Ok(Self::check(res).await?.json().await?)
+    }
+
+    pub async fn leave_channel(&self, id: Uuid) -> Result<(), ClientError> {
+        let res = self
+            .request(reqwest::Method::POST, &format!("/api/channels/{id}/leave"))
+            .send()
+            .await?;
+        Self::check(res).await.map(|_| ())
+    }
+
+    pub async fn invite(&self, id: Uuid, email: &str) -> Result<(), ClientError> {
+        let res = self
+            .request(
+                reqwest::Method::POST,
+                &format!("/api/channels/{id}/invitations"),
+            )
+            .json(&serde_json::json!({ "email": email }))
+            .send()
+            .await?;
+        Self::check(res).await.map(|_| ())
+    }
+
+    pub async fn list_invitations(&self) -> Result<Vec<InvitationSummary>, ClientError> {
+        let res = self
+            .request(reqwest::Method::GET, "/api/invitations")
+            .send()
+            .await?;
+        Ok(Self::check(res).await?.json().await?)
+    }
+
+    pub async fn respond_invitation(&self, id: Uuid, accept: bool) -> Result<(), ClientError> {
+        let res = self
+            .request(
+                reqwest::Method::POST,
+                &format!("/api/invitations/{id}/respond"),
+            )
+            .json(&serde_json::json!({ "accept": accept }))
+            .send()
+            .await?;
+        Self::check(res).await.map(|_| ())
+    }
+
+    pub async fn list_agents(&self, id: Uuid) -> Result<Vec<AgentPresence>, ClientError> {
+        let res = self
+            .request(reqwest::Method::GET, &format!("/api/channels/{id}/agents"))
+            .send()
+            .await?;
         Ok(Self::check(res).await?.json().await?)
     }
 }
