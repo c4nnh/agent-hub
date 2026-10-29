@@ -1,6 +1,6 @@
 use ah::{
     client::HubClient,
-    commands::{auth, channel, chat, update, wait},
+    commands::{auth, channel, chat, daemon, update, wait},
     config::{self, Credentials},
     hooks,
 };
@@ -54,6 +54,9 @@ enum Command {
         #[arg(long)]
         version: Option<String>,
     },
+    /// Run in the foreground and wake idle agents (folders with `ah channel wake` set) when
+    /// messages arrive and nothing is listening
+    Daemon,
     /// Block until a message from someone else arrives; print it as JSON lines and exit
     Wait {
         /// Only wait on this channel (default: every channel bound to the folder)
@@ -256,6 +259,13 @@ async fn run(cli: Cli, dir: &std::path::Path) -> Result<(), Box<dyn std::error::
                 .map_err(|e| e as Box<dyn std::error::Error>)
         }
         Command::Hook { .. } | Command::Hooks { .. } => Ok(()),
+        Command::Daemon => {
+            let creds = Credentials::load(dir)?.ok_or("not logged in; run `ah auth login`")?;
+            let client = HubClient::new(cfg.hub_url.clone(), Some(creds.token));
+            daemon::run_daemon(dir, client)
+                .await
+                .map_err(|e| e as Box<dyn std::error::Error>)
+        }
         Command::Mcp { name, folder } => ah::mcp::run(dir, &cfg, name, folder).await,
         Command::Wait {
             channel,
