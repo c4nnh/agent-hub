@@ -3,6 +3,20 @@ name = "ah-hub"
 version.workspace = true
 edition.workspace = true
 
-[dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+[dependencies]
+ah-common = { path = "../common" }
+axum = "0.8"
+base64 = "0.22"
+rand = "0.9"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
 sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "uuid", "chrono", "migrate", "macros"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+serde_json = "1"
