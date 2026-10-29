@@ -12,12 +12,15 @@ open = "5"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+futures-util = "0.3"
 thiserror = "2"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "io-std", "io-util"] }
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 
 [dev-dependencies]
 ah-hub = { path = "../hub" }
 axum = "0.8"
+chrono = "0.4"
 sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio", "migrate", "macros"] }
 tempfile = "3"

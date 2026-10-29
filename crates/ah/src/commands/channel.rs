@@ -19,7 +19,7 @@ pub struct ConfigArgs {
 }
 
 /// Exact-name match against the caller's channels.
-async fn resolve(
+pub async fn resolve(
     client: &HubClient,
     name: &str,
 ) -> Result<ChannelSummary, Box<dyn std::error::Error>> {

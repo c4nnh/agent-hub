@@ -1,4 +1,7 @@
-use ah_common::{AgentPresence, AuthPollResponse, ChannelSummary, InvitationSummary, MeResponse};
+use ah_common::{
+    AgentPresence, AuthPollResponse, ChannelSummary, InvitationSummary, MeResponse, Message,
+    PostMessage, SenderType,
+};
 use reqwest::{Response, StatusCode};
 use uuid::Uuid;
 
@@ -145,6 +148,66 @@ impl HubClient {
     pub async fn list_agents(&self, id: Uuid) -> Result<Vec<AgentPresence>, ClientError> {
         let res = self
             .request(reqwest::Method::GET, &format!("/api/channels/{id}/agents"))
+            .send()
+            .await?;
+        Ok(Self::check(res).await?.json().await?)
+    }
+}
+
+impl HubClient {
+    /// `ws(s)://` URL for the hub's websocket endpoint, with the token as query parameter.
+    pub fn ws_url(&self) -> Result<String, ClientError> {
+        let mut url =
+            reqwest::Url::parse(&self.url("/api/ws")).map_err(|e| ClientError::Status {
+                status: 0,
+                message: e.to_string(),
+            })?;
+        let scheme = if url.scheme() == "https" { "wss" } else { "ws" };
+        // Cannot fail: http(s) -> ws(s) are both special schemes.
+        let _ = url.set_scheme(scheme);
+        if let Some(t) = &self.token {
+            url.query_pairs_mut().append_pair("token", t);
+        }
+        Ok(url.to_string())
+    }
+
+    /// Messages with id > `since_id`, ascending (the hub caps one page at 500).
+    pub async fn messages(
+        &self,
+        channel_id: Uuid,
+        since_id: i64,
+        limit: i64,
+    ) -> Result<Vec<Message>, ClientError> {
+        let res = self
+            .request(
+                reqwest::Method::GET,
+                &format!("/api/channels/{channel_id}/messages"),
+            )
+            .query(&[("since_id", since_id), ("limit", limit)])
+            .send()
+            .await?;
+        Ok(Self::check(res).await?.json().await?)
+    }
+
+    pub async fn post_human_message(
+        &self,
+        channel_id: Uuid,
+        sender_name: &str,
+        body: &str,
+    ) -> Result<Message, ClientError> {
+        let msg = PostMessage {
+            body: body.to_string(),
+            reply_to: None,
+            mentions: vec![],
+            sender_type: SenderType::Human,
+            sender_name: sender_name.to_string(),
+        };
+        let res = self
+            .request(
+                reqwest::Method::POST,
+                &format!("/api/channels/{channel_id}/messages"),
+            )
+            .json(&msg)
             .send()
             .await?;
         Ok(Self::check(res).await?.json().await?)

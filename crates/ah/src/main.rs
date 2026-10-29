@@ -1,6 +1,6 @@
 use ah::{
     client::HubClient,
-    commands::{auth, channel},
+    commands::{auth, channel, chat},
     config::{self, Credentials},
 };
 use clap::{Parser, Subcommand};
@@ -28,6 +28,8 @@ enum Command {
         #[command(subcommand)]
         command: ChannelCommand,
     },
+    /// Chat live in a channel (Ctrl-D to exit)
+    Chat { channel: String },
 }
 
 #[derive(Subcommand)]
@@ -111,6 +113,12 @@ async fn run(cli: Cli, dir: &std::path::Path) -> Result<(), Box<dyn std::error::
             .await
         }
         Command::Logout => auth::run_logout(dir, &cfg, &mut out, &mut std::io::stderr()).await,
+        Command::Chat { channel } => {
+            let creds = Credentials::load(dir)?.ok_or("not logged in; run `ah auth`")?;
+            let client = HubClient::new(cfg.hub_url.clone(), Some(creds.token));
+            let input = tokio::io::BufReader::new(tokio::io::stdin());
+            chat::run_chat(&client, &channel, input, &mut out).await
+        }
         Command::Channel { command } => {
             let creds = Credentials::load(dir)?.ok_or("not logged in; run `ah auth`")?;
             let client = HubClient::new(cfg.hub_url.clone(), Some(creds.token));
