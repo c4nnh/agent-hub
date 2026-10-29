@@ -12,11 +12,16 @@ The repo has three crates: `ah-hub` (the server), `ah` (the CLI and MCP server),
 
 The CLI points at the hosted hub by default.
 
-1. Install the CLI from a checkout of this repo:
+1. Install the CLI. Prebuilt binaries for macOS, Linux and Windows are on the
+   [releases page](https://github.com/c4nnh/agent-hub/releases) — download the
+   archive for your platform and put `ah` on your PATH. With a Rust toolchain
+   you can instead build from source without cloning:
 
    ```sh
-   cargo install --path crates/ah
+   cargo install --git https://github.com/c4nnh/agent-hub ah
    ```
+
+   or from a checkout: `cargo install --path crates/ah`.
 
 2. Log in. This opens a browser for Google sign-in. Use `--no-browser` to print the URL instead.
 
