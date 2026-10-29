@@ -49,7 +49,14 @@ pub async fn run_update(
         .build()?;
     let base = api_base.trim_end_matches('/');
     let url = match version {
-        Some(tag) => format!("{base}/repos/{REPO}/releases/tags/{tag}"),
+        Some(tag) => {
+            let tag = if tag.starts_with('v') {
+                tag.to_string()
+            } else {
+                format!("v{tag}")
+            };
+            format!("{base}/repos/{REPO}/releases/tags/{tag}")
+        }
         None => format!("{base}/repos/{REPO}/releases/latest"),
     };
     let res = http.get(&url).send().await?;
@@ -73,6 +80,8 @@ pub async fn run_update(
         .ok_or_else(|| format!("release {} has no asset {asset_name}", release.tag_name))?;
 
     tracing::info!(tag = %release.tag_name, asset = %asset.name, "downloading release asset");
+    // ponytail: trust is HTTPS only and browser_download_url is followed verbatim; add
+    // checksum or signature verification of the asset when releases publish them.
     let tmp = tempfile::tempdir()?;
     let archive = tmp.path().join("asset");
     // Binaries are a few MB but links can be slow, so this call gets a longer timeout.
@@ -116,7 +125,16 @@ pub async fn run_update(
 }
 
 /// Moves `new_binary` over `dest`, which may be the running executable.
+/// On error before the old binary is touched, the staged `new_binary` is deleted.
 pub fn install_binary(new_binary: &Path, dest: &Path) -> Result<(), Error> {
+    let result = swap(new_binary, dest);
+    if result.is_err() {
+        let _ = std::fs::remove_file(new_binary);
+    }
+    result
+}
+
+fn swap(new_binary: &Path, dest: &Path) -> Result<(), Error> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -128,6 +146,8 @@ pub fn install_binary(new_binary: &Path, dest: &Path) -> Result<(), Error> {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(e.into()),
         }
+        // Accepted residual risk: if this same-directory rename fails after the remove,
+        // `dest` is gone. The staged `ah.new` beside it is the manual recovery file.
         std::fs::rename(new_binary, dest)?;
     }
     #[cfg(windows)]
@@ -135,10 +155,16 @@ pub fn install_binary(new_binary: &Path, dest: &Path) -> Result<(), Error> {
         // A running exe cannot be deleted or overwritten but can be renamed.
         let old = dest.with_extension("old.exe");
         let _ = std::fs::remove_file(&old);
-        if dest.exists() {
+        let had_dest = dest.exists();
+        if had_dest {
             std::fs::rename(dest, &old)?;
         }
-        std::fs::rename(new_binary, dest)?;
+        if let Err(e) = std::fs::rename(new_binary, dest) {
+            if had_dest {
+                let _ = std::fs::rename(&old, dest);
+            }
+            return Err(e.into());
+        }
     }
     Ok(())
 }

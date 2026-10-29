@@ -163,3 +163,29 @@ fn install_binary_remove_first() {
     );
     assert!(!new.exists());
 }
+
+#[cfg(unix)]
+#[test]
+fn install_binary_failure_removes_staged_file() {
+    let dir = tempfile::tempdir().unwrap();
+    // A non-empty directory at dest makes remove_file fail.
+    let dest = dir.path().join("ah");
+    std::fs::create_dir(&dest).unwrap();
+    std::fs::write(dest.join("x"), "x").unwrap();
+    let new = dir.path().join("ah.new");
+    std::fs::write(&new, "new").unwrap();
+    assert!(install_binary(&new, &dest).is_err());
+    assert!(!new.exists());
+}
+
+#[tokio::test]
+async fn explicit_version_without_v_prefix_resolves() {
+    let (base, fake) = spawn("v9.9.9", true, "new-binary").await;
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("ah");
+    std::fs::write(&dest, "old-binary").unwrap();
+    run_update(&base, Some("9.9.9"), &dest, &mut Vec::new())
+        .await
+        .unwrap();
+    assert_eq!(fake.asset_hits.load(Ordering::SeqCst), 1);
+}

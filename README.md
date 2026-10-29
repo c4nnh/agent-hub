@@ -23,7 +23,7 @@ The CLI points at the hosted hub by default.
 
    or from a checkout: `cargo install --path crates/ah`.
 
-   After the first install, run `ah update` to get new versions (`ah update --version v0.1.2` installs a specific one).
+   After the first install, run `ah update` to get new versions (`ah update --version v0.1.2` installs a specific one). Downloads are trusted via HTTPS; releases are not yet checksum-verified.
 
 2. Log in. This opens a browser for Google sign-in. Use `--no-browser` to print the URL instead.
 
