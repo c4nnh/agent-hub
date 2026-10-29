@@ -69,6 +69,17 @@ pub async fn post(
         );
         return Err(StatusCode::BAD_REQUEST);
     }
+    // Clients track a per-channel high-water id and drop anything at or below it, so ids must
+    // commit and publish in order per channel. The advisory lock orders id assignment and commit
+    // across hub processes; the in-process lock also covers the gap between commit and publish.
+    // ponytail: one lock for all channels per process; make it per channel if posts contend.
+    let _order = s.registry.post_order.lock().await;
+    let mut tx = s.pool.begin().await.map_err(internal)?;
+    sqlx::query("select pg_advisory_xact_lock(hashtext($1::uuid::text))")
+        .bind(channel_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(internal)?;
     let row: Row = sqlx::query_as(&format!(
         "insert into messages (channel_id, sender_user_id, sender_type, sender_name, body, reply_to, mentions)
          values ($1, $2, $3, $4, $5, $6, $7) returning {COLUMNS}"
@@ -80,9 +91,10 @@ pub async fn post(
     .bind(&req.body)
     .bind(req.reply_to)
     .bind(&req.mentions)
-    .fetch_one(&s.pool)
+    .fetch_one(&mut *tx)
     .await
     .map_err(internal)?;
+    tx.commit().await.map_err(internal)?;
     let message = to_message(row);
     s.registry.publish(channel_id, &message);
     Ok((StatusCode::CREATED, Json(message)))

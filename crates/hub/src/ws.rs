@@ -45,6 +45,8 @@ pub struct Registry {
     ping_every: Duration,
     channels: Arc<Mutex<HashMap<Uuid, Vec<Subscriber>>>>,
     next_conn: Arc<AtomicU64>,
+    /// Held by the POST handler from insert through publish; see `messages::post`.
+    pub(crate) post_order: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl Default for Registry {
@@ -61,6 +63,7 @@ impl Registry {
             ping_every,
             channels: Default::default(),
             next_conn: Default::default(),
+            post_order: Default::default(),
         }
     }
 

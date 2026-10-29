@@ -353,3 +353,43 @@ async fn server_pings_and_drops_silent_peer(pool: PgPool) {
     wait_agents(&server.app, &token, channel, 0).await;
     drop(ws);
 }
+
+#[sqlx::test(migrations = "./migrations")]
+async fn concurrent_posts_all_delivered(pool: PgPool) {
+    const N: usize = 8;
+    let server = serve(pool.clone()).await;
+    let token = user(&pool, "a@x.io").await;
+    let channel = new_channel(&server.app, &token).await;
+    let mut ws = connect(&server, &token).await.unwrap();
+    hello(&mut ws, Some("bot"), None, vec![channel]).await;
+    assert_eq!(next_event(&mut ws).await, WsEvent::Subscribed);
+
+    let posts: Vec<_> = (0..N)
+        .map(|i| {
+            let app = server.app.clone();
+            let token = token.clone();
+            tokio::spawn(async move {
+                let body = serde_json::json!({
+                    "body": format!("m{i}"), "sender_type": "human", "sender_name": "alice"
+                });
+                let uri = format!("/api/channels/{channel}/messages");
+                let (status, _) =
+                    call(&app, Method::POST, &uri, &token, Some(body.to_string())).await;
+                assert_eq!(status, StatusCode::CREATED);
+            })
+        })
+        .collect();
+    for p in posts {
+        p.await.unwrap();
+    }
+
+    // Clients keep a per-channel high-water cursor, so pushes must arrive in id order.
+    let mut ids = Vec::new();
+    while ids.len() < N {
+        match next_event(&mut ws).await {
+            WsEvent::Message { message } => ids.push(message.id),
+            WsEvent::Subscribed => panic!("unexpected subscribed"),
+        }
+    }
+    assert!(ids.windows(2).all(|w| w[0] < w[1]), "{ids:?}");
+}
