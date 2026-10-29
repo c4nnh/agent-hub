@@ -102,7 +102,64 @@ pub async fn run_join(
     Ok(())
 }
 
+/// Unbinds one folder from one channel. Local only: membership on the hub is untouched; the
+/// hub is only read to map channel names to ids.
 pub async fn run_leave(
+    dir: &Path,
+    client: &HubClient,
+    folder: &Path,
+    channel: Option<&str>,
+    out: &mut impl Write,
+) -> Res {
+    let key = Bindings::key(folder)?;
+    let mut bindings = Bindings::load(dir)?;
+    let bound_ids = bindings
+        .0
+        .get(&key)
+        .map(|b| b.channel_ids.clone())
+        .unwrap_or_default();
+    if bound_ids.is_empty() {
+        return Err(format!("{key} is not bound to any channel").into());
+    }
+    let mut bound: Vec<_> = client
+        .list_channels()
+        .await?
+        .into_iter()
+        .filter(|c| bound_ids.contains(&c.id))
+        .collect();
+    let ch = match channel {
+        Some(name) => {
+            let hit = bound.iter().position(|c| c.name == name);
+            let i = hit.ok_or_else(|| format!("{key} is not bound to channel {name}"))?;
+            bound.swap_remove(i)
+        }
+        None if bound.len() == 1 => bound.swap_remove(0),
+        None if bound.is_empty() => {
+            return Err(format!("none of the channels bound to {key} are visible to you").into());
+        }
+        None => {
+            let labels: Vec<_> = bound.iter().map(|c| c.name.clone()).collect();
+            let i = Select::new()
+                .with_prompt("Channel")
+                .items(&labels)
+                .interact()?;
+            bound.swap_remove(i)
+        }
+    };
+    if let Some(b) = bindings.0.get_mut(&key) {
+        b.channel_ids.retain(|id| *id != ch.id);
+        if b.channel_ids.is_empty() {
+            bindings.0.remove(&key);
+        }
+    }
+    bindings.save(dir)?;
+    Cursors::remove(dir, &key, ch.id)?;
+    writeln!(out, "unbound {key} from channel {}", ch.name)?;
+    Ok(())
+}
+
+/// Leaves the channel on the hub and drops it from every folder binding.
+pub async fn run_leave_account(
     dir: &Path,
     client: &HubClient,
     channel: Option<&str>,

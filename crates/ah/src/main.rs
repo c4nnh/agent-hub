@@ -15,14 +15,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Log in through the browser
+    /// Log in or out
     Auth {
-        /// Print the login URL instead of opening a browser
-        #[arg(long)]
-        no_browser: bool,
+        #[command(subcommand)]
+        command: AuthCommand,
     },
-    /// Revoke the token and delete local credentials
-    Logout,
     /// Manage channels and folder bindings
     Channel {
         #[command(subcommand)]
@@ -60,6 +57,18 @@ enum Command {
 }
 
 #[derive(Subcommand)]
+enum AuthCommand {
+    /// Log in through the browser
+    Login {
+        /// Print the login URL instead of opening a browser
+        #[arg(long)]
+        no_browser: bool,
+    },
+    /// Revoke the token and delete local credentials
+    Logout,
+}
+
+#[derive(Subcommand)]
 enum ChannelCommand {
     /// Create a channel
     Create { name: String },
@@ -68,11 +77,18 @@ enum ChannelCommand {
         #[arg(long)]
         channel: Option<String>,
     },
-    /// Leave a channel and drop its folder bindings
+    /// Unbind the current folder from a channel; with --account, leave the channel itself
     Leave {
         #[arg(long)]
         channel: Option<String>,
+        /// Folder to unbind; default the current directory
+        #[arg(long, conflicts_with = "account")]
+        folder: Option<std::path::PathBuf>,
+        /// Leave the channel on the hub and drop it from every folder binding
         #[arg(long)]
+        account: bool,
+        /// Skip the confirmation for --account
+        #[arg(long, requires = "account")]
         yes: bool,
     },
     /// Invite someone by email
@@ -130,7 +146,9 @@ async fn run(cli: Cli, dir: &std::path::Path) -> Result<(), Box<dyn std::error::
     let cfg = config::CliConfig::load(dir)?;
     let mut out = std::io::stdout();
     match cli.command {
-        Command::Auth { no_browser } => {
+        Command::Auth {
+            command: AuthCommand::Login { no_browser },
+        } => {
             auth::run_auth(
                 dir,
                 &cfg,
@@ -155,7 +173,7 @@ async fn run(cli: Cli, dir: &std::path::Path) -> Result<(), Box<dyn std::error::
             folder,
             name,
         } => {
-            let creds = Credentials::load(dir)?.ok_or("not logged in; run `ah auth`")?;
+            let creds = Credentials::load(dir)?.ok_or("not logged in; run `ah auth login`")?;
             let client = HubClient::new(cfg.hub_url.clone(), Some(creds.token));
             let args = wait::WaitArgs {
                 folder,
@@ -167,15 +185,17 @@ async fn run(cli: Cli, dir: &std::path::Path) -> Result<(), Box<dyn std::error::
                 .await
                 .map_err(|e| e as Box<dyn std::error::Error>)
         }
-        Command::Logout => auth::run_logout(dir, &cfg, &mut out, &mut std::io::stderr()).await,
+        Command::Auth {
+            command: AuthCommand::Logout,
+        } => auth::run_logout(dir, &cfg, &mut out, &mut std::io::stderr()).await,
         Command::Chat { channel } => {
-            let creds = Credentials::load(dir)?.ok_or("not logged in; run `ah auth`")?;
+            let creds = Credentials::load(dir)?.ok_or("not logged in; run `ah auth login`")?;
             let client = HubClient::new(cfg.hub_url.clone(), Some(creds.token));
             let input = tokio::io::BufReader::new(tokio::io::stdin());
             chat::run_chat(&client, &channel, input, &mut out).await
         }
         Command::Channel { command } => {
-            let creds = Credentials::load(dir)?.ok_or("not logged in; run `ah auth`")?;
+            let creds = Credentials::load(dir)?.ok_or("not logged in; run `ah auth login`")?;
             let client = HubClient::new(cfg.hub_url.clone(), Some(creds.token));
             let cwd = std::env::current_dir()?;
             match command {
@@ -185,8 +205,20 @@ async fn run(cli: Cli, dir: &std::path::Path) -> Result<(), Box<dyn std::error::
                 ChannelCommand::Join { channel } => {
                     channel::run_join(dir, &client, &cwd, channel.as_deref(), &mut out).await
                 }
-                ChannelCommand::Leave { channel, yes } => {
-                    channel::run_leave(dir, &client, channel.as_deref(), yes, &mut out).await
+                ChannelCommand::Leave {
+                    channel,
+                    account: true,
+                    yes,
+                    ..
+                } => {
+                    channel::run_leave_account(dir, &client, channel.as_deref(), yes, &mut out)
+                        .await
+                }
+                ChannelCommand::Leave {
+                    channel, folder, ..
+                } => {
+                    let folder = folder.unwrap_or_else(|| cwd.clone());
+                    channel::run_leave(dir, &client, &folder, channel.as_deref(), &mut out).await
                 }
                 ChannelCommand::Invite { channel, email } => {
                     channel::run_invite(&client, &channel, &email, &mut out).await
@@ -240,5 +272,25 @@ mod tests {
         assert!(parse(&["--respond", ID]).is_err());
         assert!(parse(&["--respond", ID, "--accept", "--reject"]).is_err());
         assert!(parse(&[]).is_ok());
+    }
+
+    #[test]
+    fn auth_and_leave_shapes() {
+        let ok = |a: &[&str]| Cli::try_parse_from(a).is_ok();
+        assert!(ok(&["ah", "auth", "login", "--no-browser"]));
+        assert!(ok(&["ah", "auth", "logout"]));
+        assert!(!ok(&["ah", "auth"]));
+        assert!(!ok(&["ah", "logout"]));
+        assert!(ok(&["ah", "channel", "leave", "--folder", "/tmp"]));
+        assert!(ok(&["ah", "channel", "leave", "--account", "--yes"]));
+        assert!(!ok(&["ah", "channel", "leave", "--yes"]));
+        assert!(!ok(&[
+            "ah",
+            "channel",
+            "leave",
+            "--account",
+            "--folder",
+            "/tmp"
+        ]));
     }
 }

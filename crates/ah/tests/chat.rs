@@ -165,7 +165,7 @@ async fn revoked_token_stops_chat_with_readable_error(pool: PgPool) {
         .await
         .expect("chat kept retrying after the token was revoked");
     let err = ended.unwrap_err().to_string();
-    assert!(err.contains("ah auth"), "{err}");
+    assert!(err.contains("ah auth login"), "{err}");
 }
 
 #[sqlx::test(migrations = "../hub/migrations")]
@@ -188,7 +188,7 @@ async fn live_logout_stops_chat_with_auth_hint(pool: PgPool) {
         .await
         .expect("chat kept running after logout");
     let err = ended.unwrap_err().to_string();
-    assert!(err.contains("ah auth"), "{err}");
+    assert!(err.contains("ah auth login"), "{err}");
 }
 
 #[sqlx::test(migrations = "../hub/migrations")]

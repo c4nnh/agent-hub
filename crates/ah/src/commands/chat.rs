@@ -57,7 +57,7 @@ pub(crate) fn refusal(e: &(dyn std::error::Error + 'static)) -> Option<String> {
 
 fn refusal_text(status: u16) -> String {
     match status {
-        401 => "hub rejected the login token (401); run `ah auth` to log in again".into(),
+        401 => "hub rejected the login token (401); run `ah auth login` to log in again".into(),
         403 => "hub denied access to the channel (403)".into(),
         _ => format!("hub refused the request ({status})"),
     }

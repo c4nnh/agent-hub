@@ -440,7 +440,7 @@ async fn revoked_token_stops_wait_with_reason(pool: PgPool) {
     assert!(is_error(&r), "{}", text(&r));
     let body = text(&r);
     assert!(body.contains("message feed stopped"), "{body}");
-    assert!(body.contains("ah auth"), "{body}");
+    assert!(body.contains("ah auth login"), "{body}");
 }
 
 /// Live bug: a session started after a send used to begin at "now" and miss it.

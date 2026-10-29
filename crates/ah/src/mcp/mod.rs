@@ -262,7 +262,7 @@ pub async fn run(
         .with_writer(std::io::stderr)
         .with_ansi(false)
         .try_init();
-    let creds = Credentials::load(dir)?.ok_or("not logged in; run `ah auth`")?;
+    let creds = Credentials::load(dir)?.ok_or("not logged in; run `ah auth login`")?;
     let client = HubClient::new(cfg.hub_url.clone(), Some(creds.token));
     let bindings = Bindings::load(dir)?;
     // Canonicalized up front: a path that does not exist (an unexpanded `${workspaceFolder}`)

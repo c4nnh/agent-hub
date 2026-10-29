@@ -61,4 +61,16 @@ impl Cursors {
         }
         all.save(dir)
     }
+
+    /// Forgets the folder's cursor for one channel; drops the folder entry when it ends empty.
+    pub fn remove(dir: &Path, folder: &str, channel: Uuid) -> std::io::Result<()> {
+        let mut all = Self::load(dir)?;
+        if let Some(entry) = all.0.get_mut(folder) {
+            entry.remove(&channel);
+            if entry.is_empty() {
+                all.0.remove(folder);
+            }
+        }
+        all.save(dir)
+    }
 }

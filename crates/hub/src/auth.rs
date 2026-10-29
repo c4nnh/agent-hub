@@ -142,9 +142,9 @@ const START_PAGE: &str = r#"<!doctype html>
 <html><head><meta charset="utf-8"><title>Agent Hub login</title></head>
 <body style="font-family:sans-serif;max-width:32em;margin:3em auto">
 <h1>Agent Hub login</h1>
-<p>Check that this code matches the one <code>ah auth</code> printed in your terminal:</p>
+<p>Check that this code matches the one <code>ah auth login</code> printed in your terminal:</p>
 <p style="font-size:2em;font-family:monospace">{USER_CODE}</p>
-<p>If it does not match, or you did not run <code>ah auth</code>, close this tab.</p>
+<p>If it does not match, or you did not run <code>ah auth login</code>, close this tab.</p>
 <form method="post" action="/auth/confirm">
 <input type="hidden" name="code" value="{CODE}">
 <button type="submit">This code matches my terminal</button>
@@ -152,7 +152,7 @@ const START_PAGE: &str = r#"<!doctype html>
 </body></html>"#;
 
 /// Shows the user code so the user can check it against their terminal before signing in. A link
-/// from someone else's `ah auth` shows a code the user never saw, so they stop here.
+/// from someone else's `ah auth login` shows a code the user never saw, so they stop here.
 pub async fn google_start(Query(q): Query<CodeQuery>) -> Result<Response, StatusCode> {
     if !valid_code(&q.code) {
         tracing::warn!(len = q.code.len(), "invalid auth start code");

@@ -3,6 +3,7 @@ use ah::{
     client::HubClient,
     commands::channel::{
         ConfigArgs, run_config, run_create, run_invitation, run_invite, run_join, run_leave,
+        run_leave_account,
     },
     cursors::Cursors,
 };
@@ -118,6 +119,62 @@ async fn invitation_accept_via_flags(pool: PgPool) {
 #[sqlx::test(migrations = "../hub/migrations")]
 async fn leave_unbinds(pool: PgPool) {
     let hub = spawn_hub(pool.clone()).await;
+    let c = client(&pool, &hub, "a@b.co").await;
+    let dir = tempfile::tempdir().unwrap();
+    let (f1, f2) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let team = c.create_channel("team").await.unwrap();
+    let other = c.create_channel("other").await.unwrap();
+    let mut out = Vec::new();
+    for (f, ch) in [(&f1, "team"), (&f1, "other"), (&f2, "team")] {
+        run_join(dir.path(), &c, f.path(), Some(ch), &mut out)
+            .await
+            .unwrap();
+    }
+    let k1 = Bindings::key(f1.path()).unwrap();
+
+    // Two channels bound: --channel picks one; the other binding and cursor stay.
+    let mut out = Vec::new();
+    run_leave(dir.path(), &c, f1.path(), Some("team"), &mut out)
+        .await
+        .unwrap();
+    assert_eq!(text(out), format!("unbound {k1} from channel team\n"));
+    let b = Bindings::load(dir.path()).unwrap();
+    assert_eq!(b.for_folder(f1.path()).unwrap().channel_ids, vec![other.id]);
+    assert!(
+        b.for_folder(f2.path())
+            .unwrap()
+            .channel_ids
+            .contains(&team.id)
+    );
+    let cursors = Cursors::load_folder(dir.path(), &k1).unwrap();
+    assert!(!cursors.contains_key(&team.id) && cursors.contains_key(&other.id));
+    // Membership untouched.
+    assert_eq!(c.list_channels().await.unwrap().len(), 2);
+
+    // Not bound to it any more: refused.
+    let r = run_leave(dir.path(), &c, f1.path(), Some("team"), &mut Vec::new()).await;
+    assert!(
+        r.unwrap_err()
+            .to_string()
+            .contains("not bound to channel team")
+    );
+
+    // Last channel: one bound, no name needed; the folder entry is dropped.
+    run_leave(dir.path(), &c, f1.path(), None, &mut Vec::new())
+        .await
+        .unwrap();
+    assert!(
+        Bindings::load(dir.path())
+            .unwrap()
+            .for_folder(f1.path())
+            .is_none()
+    );
+    assert!(Cursors::load_folder(dir.path(), &k1).unwrap().is_empty());
+}
+
+#[sqlx::test(migrations = "../hub/migrations")]
+async fn leave_account_removes_membership(pool: PgPool) {
+    let hub = spawn_hub(pool.clone()).await;
     let owner = client(&pool, &hub, "a@b.co").await;
     let guest = client(&pool, &hub, "g@b.co").await;
     let dir = tempfile::tempdir().unwrap();
@@ -153,7 +210,7 @@ async fn leave_unbinds(pool: PgPool) {
 
     // Owner with members: server says 409, bindings untouched.
     let mut out = Vec::new();
-    let r = run_leave(dir.path(), &owner, Some("team"), true, &mut out).await;
+    let r = run_leave_account(dir.path(), &owner, Some("team"), true, &mut out).await;
     assert!(r.is_err());
     let b = Bindings::load(dir.path()).unwrap();
     assert!(
@@ -168,7 +225,7 @@ async fn leave_unbinds(pool: PgPool) {
         .await
         .unwrap();
     let mut out = Vec::new();
-    run_leave(dir.path(), &guest, Some("team"), true, &mut out)
+    run_leave_account(dir.path(), &guest, Some("team"), true, &mut out)
         .await
         .unwrap();
     let b = Bindings::load(dir.path()).unwrap();

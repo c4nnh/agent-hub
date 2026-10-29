@@ -69,7 +69,7 @@ impl Write for SharedBuf {
     }
 }
 
-/// Runs `ah auth --no-browser` while a helper plays the browser: it reads the printed URL, GETs
+/// Runs `ah auth login --no-browser` while a helper plays the browser: it reads the printed URL, GETs
 /// the confirm page, checks it shows the printed verification code, confirms (hub redirects to
 /// Google), then completes the Google callback.
 async fn login(hub: &str, dir: &Path) -> String {

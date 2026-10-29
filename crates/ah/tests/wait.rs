@@ -183,7 +183,7 @@ async fn refusal_exits_2(pool: PgPool) {
     e.c.logout().await.unwrap();
     let err = wait_once(&e).await.unwrap_err();
     assert!(err.downcast_ref::<Refusal>().is_some(), "{err}");
-    assert!(err.to_string().contains("ah auth"), "{err}");
+    assert!(err.to_string().contains("ah auth login"), "{err}");
 }
 
 #[sqlx::test(migrations = "../hub/migrations")]

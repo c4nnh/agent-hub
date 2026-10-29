@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-/// Short code that `ah auth` prints and the hub's login page shows, so the user can check that
+/// Short code that `ah auth login` prints and the hub's login page shows, so the user can check that
 /// the browser login belongs to their terminal. Format `A1B2-C3D4`.
 pub fn user_code(code: &str) -> String {
     let hex = format!("{:X}", Sha256::digest(code.as_bytes()));

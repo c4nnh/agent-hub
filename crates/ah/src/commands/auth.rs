@@ -51,7 +51,7 @@ pub async fn run_auth(
             return Ok(());
         }
         if tokio::time::Instant::now() >= deadline {
-            return Err("login timed out; run `ah auth` again".into());
+            return Err("login timed out; run `ah auth login` again".into());
         }
         tokio::time::sleep(poll_interval).await;
     }

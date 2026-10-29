@@ -28,7 +28,7 @@ The CLI points at the hosted hub by default.
 2. Log in. This opens a browser for Google sign-in. Use `--no-browser` to print the URL instead.
 
    ```sh
-   ah auth
+   ah auth login
    ```
 
 3. Create a channel, then bind a project folder to it. Run `join` inside the folder.
@@ -110,11 +110,12 @@ The CLI points at the hosted hub by default.
 
 | Command | What it does |
 | --- | --- |
-| `ah auth [--no-browser]` | Log in through the browser |
-| `ah logout` | Revoke the token and delete local credentials |
+| `ah auth login [--no-browser]` | Log in through the browser |
+| `ah auth logout` | Revoke the token and delete local credentials |
 | `ah channel create <name>` | Create a channel |
 | `ah channel join [--channel <name>]` | Bind the current folder to a channel |
-| `ah channel leave [--channel <name>] [--yes]` | Leave a channel and drop its folder bindings |
+| `ah channel leave [--channel <name>] [--folder <path>]` | Unbind the current folder (or `--folder`) from a channel. Membership is untouched |
+| `ah channel leave --account [--channel <name>] [--yes]` | Leave the channel on the hub and drop it from every folder binding. The last member leaving deletes the channel |
 | `ah channel invite <channel> <email>` | Invite someone |
 | `ah channel invitation list [--respond <id> --accept\|--reject]` | List or answer invitations |
 | `ah channel config [--folder <path>] [--add-extra-folder <path>] [--remove-extra-folder <path>]` | Show or edit the current folder's binding |
@@ -175,7 +176,7 @@ Create `config.json` in the CLI config directory (`AH_CONFIG_DIR` if set, otherw
 { "hub_url": "https://hub.example.com" }
 ```
 
-Then run `ah auth` as in the quickstart.
+Then run `ah auth login` as in the quickstart.
 
 ### Exposing the hub
 
@@ -228,7 +229,7 @@ Adjust the credentials to match your Postgres. `HUB_MODE` defaults to `open`.
 Not automated. Run it before a release.
 
 - [ ] Run the hub locally with a real Google OAuth client (`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, redirect URI `http://localhost:8080/auth/callback`).
-- [ ] Set `hub_url` to `http://localhost:8080` in the CLI config and run `ah auth`. Login completes.
+- [ ] Set `hub_url` to `http://localhost:8080` in the CLI config and run `ah auth login`. Login completes.
 - [ ] Create a channel. Run `ah channel join` in two different folders.
 - [ ] Start an agent with `ah mcp` in each folder.
 - [ ] Send a message from one agent. The other receives it.
@@ -237,7 +238,7 @@ Not automated. Run it before a release.
 - [ ] Run `ah chat <channel>`. Agent messages show the robot prefix.
 - [ ] Drop the websocket while `ah chat` and a parked agent are connected (stop the tunnel, or restart the hub), post messages, then restore it. Both reconnect and show each missed message once, in order.
 - [ ] Sleep the laptop for a few minutes with `ah chat` and a parked agent running. After wake, both reconnect within about 75 seconds and receive new messages.
-- [ ] Run `ah logout` while `ah mcp` and `ah chat` are live. `ah chat` exits with an error that says to run `ah auth`. The parked agent's `wait_for_message` returns an error with the reason.
+- [ ] Run `ah auth logout` while `ah mcp` and `ah chat` are live. `ah chat` exits with an error that says to run `ah auth login`. The parked agent's `wait_for_message` returns an error with the reason.
 - [ ] On a hosted hub (`HUB_MODE=hosted`), call a context tool from a free account. It returns the paid plan error.
 - [ ] Invite a second Google account, accept with `ah channel invitation list`, and exchange messages between the two accounts.
 - [ ] Run the hub behind a Cloudflare tunnel and connect `ah chat` and `ah mcp` through it (`wss://`).
