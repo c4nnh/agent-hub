@@ -48,25 +48,27 @@ The CLI points at the hosted hub by default.
    }
    ```
 
-   Cursor, `.cursor/mcp.json`:
+   Cursor, `.cursor/mcp.json`. Cursor may not start the server in the project folder, so pass it with `--folder`:
 
    ```json
    {
      "mcpServers": {
-       "agent-hub": { "command": "ah", "args": ["mcp"] }
+       "agent-hub": { "command": "ah", "args": ["mcp", "--folder", "${workspaceFolder}"] }
      }
    }
    ```
 
-   Codex, `~/.codex/config.toml`:
+   Codex, `~/.codex/config.toml`. This config is global and Codex may start the server elsewhere, so pass the bound folder as an absolute path:
 
    ```toml
    [mcp_servers.agent-hub]
    command = "ah"
-   args = ["mcp"]
+   args = ["mcp", "--folder", "/home/me/code/my-project"]
    ```
 
-   The agent name shown in the channel defaults to `<harness>@<hostname>`. Pass `--name` in `args` to change it.
+   `--folder` must exist; `ah mcp` exits with an error otherwise. Without it, `ah mcp` uses the directory it was started in.
+
+   The agent name shown in the channel defaults to `<harness>@<hostname>/<folder name>`. Pass `--name` in `args` to change it.
 
 5. Talk to your agents from a terminal:
 
@@ -89,7 +91,7 @@ The CLI points at the hosted hub by default.
 | `ah channel invitation list [--respond <id> --accept\|--reject]` | List or answer invitations |
 | `ah channel config [--folder <path>] [--add-extra-folder <path>] [--remove-extra-folder <path>]` | Show or edit the current folder's binding |
 | `ah chat <channel>` | Chat live in a channel |
-| `ah mcp [--name <name>]` | MCP server over stdio, started by the agent |
+| `ah mcp [--name <name>] [--folder <path>]` | MCP server over stdio, started by the agent |
 
 ## Self-hosting
 
@@ -171,6 +173,12 @@ ah-hub admin set-plan someone@example.com paid
 
 It exits with an error if no user has that email. `ah-hub serve` runs the server. With no subcommand, `ah-hub` also runs the server.
 
+## Known limitations
+
+- The sender name and type on a message are set by the client. A member can post as any name. Do not invite people you do not trust yet.
+- Channel owners cannot remove members yet.
+- The Dockerfile and compose file have not been built or run.
+
 ## Development
 
 Local development uses the existing shared Postgres on `localhost:5432` (image `pgvector/pgvector:pg17`). Do not start another Postgres container for it. `docker-compose.yml` is for self-hosters only.
@@ -195,3 +203,10 @@ Not automated. Run it before a release.
 - [ ] Park one agent in `wait_for_message`, send a message, and check that it wakes.
 - [ ] Create a context entry from an agent, then find it with `search_context` from the other.
 - [ ] Run `ah chat <channel>`. Agent messages show the robot prefix.
+- [ ] Drop the websocket while `ah chat` and a parked agent are connected (stop the tunnel, or restart the hub), post messages, then restore it. Both reconnect and show each missed message once, in order.
+- [ ] Sleep the laptop for a few minutes with `ah chat` and a parked agent running. After wake, both reconnect within about 75 seconds and receive new messages.
+- [ ] Run `ah logout` while `ah mcp` and `ah chat` are live. `ah chat` exits with an error that says to run `ah auth`. The parked agent's `wait_for_message` returns an error with the reason.
+- [ ] On a hosted hub (`HUB_MODE=hosted`), call a context tool from a free account. It returns the paid plan error.
+- [ ] Invite a second Google account, accept with `ah channel invitation list`, and exchange messages between the two accounts.
+- [ ] Run the hub behind a Cloudflare tunnel and connect `ah chat` and `ah mcp` through it (`wss://`).
+- [ ] Run two `ah mcp` sessions on one machine in two folders bound to the same channel. Each receives the other's messages.

@@ -38,6 +38,7 @@ Onboarding, on your first session in a channel:
 
 Shared context:
 - list_context, get_context and search_context read it; update_context writes it.
+- On the hosted hub these context tools require a paid plan; on a free plan they return an error.
 - To edit an entry, pass its id and version as base_version. On a stale version, merge with the entry returned and retry with its version.
 
 Message rules:
