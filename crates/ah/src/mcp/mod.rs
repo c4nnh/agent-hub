@@ -129,6 +129,9 @@ impl Session {
         *cursor = msg.id;
         let is_echo = inbox.sent.contains(&msg.id);
         if is_echo {
+            let idle = self.idle_snapshot(&inbox);
+            drop(inbox);
+            self.persist_idle(idle);
             return;
         }
         inbox.queue.push_back(msg);
@@ -144,6 +147,29 @@ impl Session {
         inbox.sent.push_back(id);
         if inbox.sent.len() > SENT_IDS {
             inbox.sent.pop_front();
+        }
+        let idle = self.idle_snapshot(&inbox);
+        drop(inbox);
+        self.persist_idle(idle);
+    }
+
+    /// Cursors to save when nothing is waiting in the queue, so every message up to them is
+    /// delivered or our own. With a non-empty queue the cursor may run ahead of undelivered
+    /// messages, so nothing is saved.
+    fn idle_snapshot(&self, inbox: &Inbox) -> Option<BTreeMap<Uuid, i64>> {
+        inbox
+            .queue
+            .is_empty()
+            .then(|| inbox.cursors.iter().map(|(k, v)| (*k, *v)).collect())
+    }
+
+    /// Saves the cursor past our own posts, so a restarted session does not announce them back.
+    /// ponytail: a failed write leaves one noisy self-announce after a restart; no retry.
+    fn persist_idle(&self, snapshot: Option<BTreeMap<Uuid, i64>>) {
+        if let Some(snapshot) = snapshot
+            && let Err(error) = Cursors::advance(&self.dir, &self.folder, &snapshot)
+        {
+            tracing::warn!(%error, "could not save cursors; own posts may be announced after a restart");
         }
     }
 

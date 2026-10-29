@@ -499,3 +499,39 @@ async fn wait_delivery_advances_shared_cursor(pool: PgPool) {
     assert!(second.is_err(), "ah wait returned {second:?}");
     assert!(out.is_empty(), "{}", String::from_utf8_lossy(&out));
 }
+
+/// A restarted session must not announce the agent's own reply as a new message.
+#[sqlx::test(migrations = "../hub/migrations")]
+async fn restart_does_not_redeliver_own_reply(pool: PgPool) {
+    let hub = spawn_hub(pool.clone(), HubMode::Open).await;
+    let a = user(&pool, &hub, "a@b.co").await;
+    let a2 = same_user(&pool, &hub, "a@b.co").await;
+    let ch = a.create_channel("team").await.unwrap();
+    let cfg = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    run_join(cfg.path(), &a, dir.path(), Some("team"), &mut Vec::new())
+        .await
+        .unwrap();
+    post_human(&a, &ch, "question").await;
+
+    let h = harness_in(cfg, dir, a, &[&ch]).await;
+    let got = text(&call(&h, "wait_for_message", json!({"timeout_secs": 5})).await);
+    assert!(got.contains("question"), "{got}");
+    let sent = call(
+        &h,
+        "send_message",
+        json!({"channel": "team", "body": "my reply"}),
+    )
+    .await;
+    assert!(!is_error(&sent), "{}", text(&sent));
+    // Let the echo of the reply reach the session before it goes away.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let Harness { cfg, dir, ws, .. } = h;
+    ws.abort();
+
+    post_human(&a2, &ch, "follow-up").await;
+    let h2 = harness_in(cfg, dir, a2, &[&ch]).await;
+    let got = text(&call(&h2, "wait_for_message", json!({"timeout_secs": 5})).await);
+    assert!(got.contains("follow-up"), "{got}");
+    assert!(!got.contains("my reply"), "{got}");
+}

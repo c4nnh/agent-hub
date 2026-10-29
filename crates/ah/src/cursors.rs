@@ -2,7 +2,8 @@
 //! Shared by `ah wait`, the MCP server and `ah channel join`, so a message is delivered once per
 //! folder by whichever listener runs first.
 //! ponytail: every update is load-modify-save without a lock; two simultaneous listeners on one
-//! folder may re-deliver. Per-folder locking is the upgrade path.
+//! folder may re-deliver, e.g. `ah wait` and an MCP session running on the same folder at once.
+//! Per-folder locking is the upgrade path.
 
 use std::{
     collections::BTreeMap,
