@@ -12,7 +12,7 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}"))
         .await
         .expect("bind");
-    axum::serve(listener, app(AppState { pool, cfg }))
+    axum::serve(listener, app(AppState::new(pool, cfg)))
         .await
         .expect("serve");
 }

@@ -41,7 +41,7 @@ async fn hub(pool: PgPool) -> Router {
         public_url: "http://hub.test".into(),
         google_base_url: Some(fake_google().await),
     };
-    app(AppState { pool, cfg })
+    app(AppState::new(pool, cfg))
 }
 
 async fn call(

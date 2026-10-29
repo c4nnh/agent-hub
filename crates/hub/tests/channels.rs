@@ -24,7 +24,7 @@ fn hub(pool: PgPool) -> Router {
         public_url: "http://hub.test".into(),
         google_base_url: None,
     };
-    app(AppState { pool, cfg })
+    app(AppState::new(pool, cfg))
 }
 
 async fn user(pool: &PgPool, email: &str) -> String {
