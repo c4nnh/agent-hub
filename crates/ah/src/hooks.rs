@@ -80,10 +80,7 @@ fn claude_on_path() -> bool {
 }
 
 fn invalid(msg: &str) -> std::io::Error {
-    std::io::Error::new(
-        std::io::ErrorKind::InvalidData,
-        format!("hook settings: {msg}"),
-    )
+    std::io::Error::new(std::io::ErrorKind::InvalidData, format!("settings: {msg}"))
 }
 
 fn load(path: &Path) -> std::io::Result<Value> {
@@ -218,7 +215,9 @@ fn mcp_servers(doc: &Value) -> Option<&serde_json::Map<String, Value>> {
 /// Adds `mcpServers.agent-hub` (`{"type": "stdio", "command": "ah", "args": ["mcp"]}`) to the
 /// MCP config file unless an entry under any name passes `is_ours_mcp`. Nothing else in the file
 /// is touched; it is left alone when nothing is missing or when it does not parse.
-pub fn ensure_mcp(file: Option<&Path>) -> std::io::Result<McpStatus> {
+///
+/// `delegate` hands the write to `claude mcp add-json` (see `mcp_write`).
+pub fn ensure_mcp(file: Option<&Path>, delegate: bool) -> std::io::Result<McpStatus> {
     let Some(file) = file else {
         return Ok(McpStatus::NotApplicable);
     };
@@ -237,16 +236,64 @@ pub fn ensure_mcp(file: Option<&Path>) -> std::io::Result<McpStatus> {
     if servers.contains_key(MCP_NAME) {
         return Ok(McpStatus::Foreign);
     }
-    servers.insert(
-        MCP_NAME.into(),
-        json!({"type": "stdio", "command": "ah", "args": ["mcp"]}),
-    );
+    let entry = json!({"type": "stdio", "command": "ah", "args": ["mcp"]});
+    if mcp_write(true, delegate) == McpWrite::Delegate {
+        add_via_claude(&entry)?;
+        return Ok(McpStatus::Registered);
+    }
+    servers.insert(MCP_NAME.into(), entry);
     save(file, &doc)?;
     Ok(McpStatus::Registered)
 }
 
-/// Removes `mcpServers.agent-hub` when it passes `is_ours_mcp` (and the `mcpServers` object if
-/// that empties it). Returns whether an entry was removed.
+#[derive(Debug, PartialEq)]
+pub enum McpWrite {
+    Skip,
+    Delegate,
+    Direct,
+}
+
+/// How an addition is written. Claude Code rewrites `~/.claude.json` from live sessions, so our
+/// read-then-rename could drop a concurrent update (or lose our entry to a stale rewrite): when
+/// `claude` is available it makes the write itself. Without it, write the file directly.
+pub fn mcp_write(needs_add: bool, claude_on_path: bool) -> McpWrite {
+    match (needs_add, claude_on_path) {
+        (false, _) => McpWrite::Skip,
+        (true, true) => McpWrite::Delegate,
+        (true, false) => McpWrite::Direct,
+    }
+}
+
+fn add_via_claude(entry: &Value) -> std::io::Result<()> {
+    let output = std::process::Command::new("claude")
+        .args([
+            "mcp",
+            "add-json",
+            "-s",
+            "user",
+            MCP_NAME,
+            &entry.to_string(),
+        ])
+        .stdin(std::process::Stdio::null())
+        .output()?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(std::io::Error::other(format!(
+        "claude mcp add-json failed ({}): {}",
+        output.status,
+        stderr.trim()
+    )))
+}
+
+/// Delegate only for the real `~/.claude.json`: `claude` writes there, not to injected paths.
+fn delegate_for(file: &Path) -> bool {
+    let real = dirs::home_dir().map(|h| h.join(".claude.json"));
+    claude_on_path() && real.as_deref() == Some(file)
+}
+
+/// Removes `mcpServers.agent-hub` when it passes `is_ours_mcp`. Returns whether an entry was removed.
 pub fn uninstall_mcp(file: Option<&Path>) -> std::io::Result<bool> {
     let Some(file) = file.filter(|f| f.exists()) else {
         return Ok(false);
@@ -262,9 +309,6 @@ pub fn uninstall_mcp(file: Option<&Path>) -> std::io::Result<bool> {
         return Ok(false);
     }
     servers.shift_remove(MCP_NAME);
-    if servers.is_empty() {
-        root.shift_remove("mcpServers");
-    }
     save(file, &doc)?;
     Ok(true)
 }
@@ -342,13 +386,17 @@ pub fn ensure_and_report(dirs: &HookDirs, out: &mut impl Write) -> std::io::Resu
         ),
     ];
     let mcp = [
-        (
-            "claude code",
-            ensure_mcp(dirs.claude.as_deref().map(claude_mcp_file).as_deref()),
-        ),
+        ("claude code", {
+            let file = dirs.claude.as_deref().map(claude_mcp_file);
+            let delegate = file.as_deref().is_some_and(delegate_for);
+            ensure_mcp(file.as_deref(), delegate)
+        }),
         (
             "cursor",
-            ensure_mcp(dirs.cursor.as_deref().map(cursor_mcp_file).as_deref()),
+            ensure_mcp(
+                dirs.cursor.as_deref().map(cursor_mcp_file).as_deref(),
+                false,
+            ),
         ),
     ];
     let mut any = false;
@@ -1064,6 +1112,14 @@ mod tests {
     }
 
     #[test]
+    fn mcp_write_decision() {
+        assert_eq!(mcp_write(false, true), McpWrite::Skip);
+        assert_eq!(mcp_write(false, false), McpWrite::Skip);
+        assert_eq!(mcp_write(true, true), McpWrite::Delegate);
+        assert_eq!(mcp_write(true, false), McpWrite::Direct);
+    }
+
+    #[test]
     fn mcp_is_ours_matches_ah_mcp_only() {
         let ours = |c: &str, a: Value| is_ours_mcp(&json!({"command": c, "args": a}));
         assert!(ours("ah", json!(["mcp"])));
@@ -1084,7 +1140,10 @@ mod tests {
             r#"{"zeta": 1, "mcpServers": {"other": {"command": "x", "args": ["y"], "weird": [1, {"a": null}]}}, "alpha": {"k": true}}"#,
         )
         .unwrap();
-        assert_eq!(ensure_mcp(Some(&file)).unwrap(), McpStatus::Registered);
+        assert_eq!(
+            ensure_mcp(Some(&file), false).unwrap(),
+            McpStatus::Registered
+        );
         let v = read(&file);
         assert_eq!(
             v.as_object().unwrap().keys().collect::<Vec<_>>(),
@@ -1096,7 +1155,7 @@ mod tests {
             json!({"type": "stdio", "command": "ah", "args": ["mcp"]})
         );
         let before = std::fs::read(&file).unwrap();
-        assert_eq!(ensure_mcp(Some(&file)).unwrap(), McpStatus::Present);
+        assert_eq!(ensure_mcp(Some(&file), false).unwrap(), McpStatus::Present);
         assert_eq!(std::fs::read(&file).unwrap(), before);
     }
 }

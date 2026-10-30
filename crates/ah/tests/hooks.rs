@@ -473,7 +473,7 @@ fn mcp_fresh_install_both_targets_and_status() {
         json!({"mcpServers": {"agent-hub": {"type": "stdio", "command": "ah", "args": ["mcp"]}}});
     for f in [&claude, &cursor] {
         assert_eq!(
-            hooks::ensure_mcp(Some(f)).unwrap(),
+            hooks::ensure_mcp(Some(f), false).unwrap(),
             hooks::McpStatus::Registered
         );
         assert_eq!(read_json(f), want);
@@ -489,7 +489,7 @@ fn mcp_existing_ours_under_other_name_is_not_duplicated() {
         json!({"mcpServers": {"hub": {"command": "/opt/bin/ah", "args": ["mcp", "--name", "x"]}}});
     std::fs::write(&f, original.to_string()).unwrap();
     assert_eq!(
-        hooks::ensure_mcp(Some(&f)).unwrap(),
+        hooks::ensure_mcp(Some(&f), false).unwrap(),
         hooks::McpStatus::Present
     );
     assert_eq!(read_json(&f), original);
@@ -506,7 +506,7 @@ fn mcp_foreign_agent_hub_entry_is_left_alone() {
     std::fs::write(&f, original.to_string()).unwrap();
     let before = std::fs::read(&f).unwrap();
     assert_eq!(
-        hooks::ensure_mcp(Some(&f)).unwrap(),
+        hooks::ensure_mcp(Some(&f), false).unwrap(),
         hooks::McpStatus::Foreign
     );
     assert_eq!(std::fs::read(&f).unwrap(), before);
@@ -524,7 +524,7 @@ fn mcp_uninstall_removes_only_ours() {
         json!({"a": 1, "mcpServers": {"other": {"command": "x"}}, "z": 2}).to_string(),
     )
     .unwrap();
-    hooks::ensure_mcp(Some(&f)).unwrap();
+    hooks::ensure_mcp(Some(&f), false).unwrap();
     assert!(hooks::uninstall_mcp(Some(&f)).unwrap());
     assert_eq!(
         read_json(&f),
@@ -532,11 +532,11 @@ fn mcp_uninstall_removes_only_ours() {
     );
     assert!(!hooks::uninstall_mcp(Some(&f)).unwrap());
 
-    // Only ours in the file: the emptied mcpServers goes too.
+    // Only ours in the file: the emptied mcpServers stays.
     let g = dir.path().join("mcp.json");
-    hooks::ensure_mcp(Some(&g)).unwrap();
+    hooks::ensure_mcp(Some(&g), false).unwrap();
     assert!(hooks::uninstall_mcp(Some(&g)).unwrap());
-    assert_eq!(read_json(&g), json!({}));
+    assert_eq!(read_json(&g), json!({"mcpServers": {}}));
     assert!(!hooks::uninstall_mcp(None).unwrap());
 }
 
@@ -551,7 +551,7 @@ fn mcp_opt_out_and_unparsable_file() {
     assert!(!String::from_utf8(out).unwrap().contains("mcp"));
     assert!(!home.path().join(".claude.json").exists());
     assert_eq!(
-        hooks::ensure_mcp(None).unwrap(),
+        hooks::ensure_mcp(None, false).unwrap(),
         hooks::McpStatus::NotApplicable
     );
 
