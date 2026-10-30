@@ -414,9 +414,18 @@ fn report_names_each_target_or_falls_back() {
         text.contains("do not run ah wait in the background"),
         "{text}"
     );
-    assert_eq!(text.lines().count(), 3, "{text}");
+    assert_eq!(text.lines().count(), 5, "{text}");
+    assert!(
+        text.contains("claude code mcp registered")
+            && text.contains("cursor mcp already registered"),
+        "{text}"
+    );
     let text = report(&both);
     assert!(text.contains("claude code hooks present") && text.contains("cursor hook present"));
+    assert!(
+        text.contains("claude code mcp already registered")
+            && text.contains("cursor mcp already registered")
+    );
 }
 
 #[tokio::test]
@@ -444,4 +453,120 @@ async fn cursor_stop_silent_when_unbound_or_offline() {
     let input: HookInput = serde_json::from_str(raw).unwrap();
     assert_eq!(input.workspace_roots, vec![std::path::PathBuf::from("/w")]);
     assert!(input.cwd.is_none());
+}
+
+fn read_json(p: &Path) -> Value {
+    serde_json::from_slice(&std::fs::read(p).unwrap()).unwrap()
+}
+
+#[test]
+fn mcp_fresh_install_both_targets_and_status() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir(home.path().join(".claude")).unwrap();
+    std::fs::create_dir(home.path().join(".cursor")).unwrap();
+    let dirs = hooks::HookDirs::detect_in(home.path(), false, false);
+    let claude = hooks::claude_mcp_file(dirs.claude.as_ref().unwrap());
+    let cursor = hooks::cursor_mcp_file(dirs.cursor.as_ref().unwrap());
+    assert_eq!(claude, home.path().join(".claude.json"));
+    assert_eq!(hooks::mcp_status(Some(&claude)).unwrap(), "not registered");
+    let want =
+        json!({"mcpServers": {"agent-hub": {"type": "stdio", "command": "ah", "args": ["mcp"]}}});
+    for f in [&claude, &cursor] {
+        assert_eq!(
+            hooks::ensure_mcp(Some(f)).unwrap(),
+            hooks::McpStatus::Registered
+        );
+        assert_eq!(read_json(f), want);
+        assert_eq!(hooks::mcp_status(Some(f)).unwrap(), "registered");
+    }
+}
+
+#[test]
+fn mcp_existing_ours_under_other_name_is_not_duplicated() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("mcp.json");
+    let original =
+        json!({"mcpServers": {"hub": {"command": "/opt/bin/ah", "args": ["mcp", "--name", "x"]}}});
+    std::fs::write(&f, original.to_string()).unwrap();
+    assert_eq!(
+        hooks::ensure_mcp(Some(&f)).unwrap(),
+        hooks::McpStatus::Present
+    );
+    assert_eq!(read_json(&f), original);
+    // Uninstall only removes the `agent-hub` name.
+    assert!(!hooks::uninstall_mcp(Some(&f)).unwrap());
+    assert_eq!(read_json(&f), original);
+}
+
+#[test]
+fn mcp_foreign_agent_hub_entry_is_left_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("mcp.json");
+    let original = json!({"mcpServers": {"agent-hub": {"command": "node", "args": ["x.js"]}}});
+    std::fs::write(&f, original.to_string()).unwrap();
+    let before = std::fs::read(&f).unwrap();
+    assert_eq!(
+        hooks::ensure_mcp(Some(&f)).unwrap(),
+        hooks::McpStatus::Foreign
+    );
+    assert_eq!(std::fs::read(&f).unwrap(), before);
+    assert!(!hooks::uninstall_mcp(Some(&f)).unwrap());
+    assert_eq!(std::fs::read(&f).unwrap(), before);
+    assert!(hooks::mcp_status(Some(&f)).unwrap().contains("left alone"));
+}
+
+#[test]
+fn mcp_uninstall_removes_only_ours() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join(".claude.json");
+    std::fs::write(
+        &f,
+        json!({"a": 1, "mcpServers": {"other": {"command": "x"}}, "z": 2}).to_string(),
+    )
+    .unwrap();
+    hooks::ensure_mcp(Some(&f)).unwrap();
+    assert!(hooks::uninstall_mcp(Some(&f)).unwrap());
+    assert_eq!(
+        read_json(&f),
+        json!({"a": 1, "mcpServers": {"other": {"command": "x"}}, "z": 2})
+    );
+    assert!(!hooks::uninstall_mcp(Some(&f)).unwrap());
+
+    // Only ours in the file: the emptied mcpServers goes too.
+    let g = dir.path().join("mcp.json");
+    hooks::ensure_mcp(Some(&g)).unwrap();
+    assert!(hooks::uninstall_mcp(Some(&g)).unwrap());
+    assert_eq!(read_json(&g), json!({}));
+    assert!(!hooks::uninstall_mcp(None).unwrap());
+}
+
+#[test]
+fn mcp_opt_out_and_unparsable_file() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir(home.path().join(".claude")).unwrap();
+    std::fs::create_dir(home.path().join(".cursor")).unwrap();
+    let off = hooks::HookDirs::detect_in(home.path(), true, true);
+    let mut out = Vec::new();
+    hooks::ensure_and_report(&off, &mut out).unwrap();
+    assert!(!String::from_utf8(out).unwrap().contains("mcp"));
+    assert!(!home.path().join(".claude.json").exists());
+    assert_eq!(
+        hooks::ensure_mcp(None).unwrap(),
+        hooks::McpStatus::NotApplicable
+    );
+
+    // A broken file is reported as a warning and left untouched.
+    let on = hooks::HookDirs::detect_in(home.path(), false, false);
+    std::fs::write(home.path().join(".claude.json"), "{ nope").unwrap();
+    let mut out = Vec::new();
+    hooks::ensure_and_report(&on, &mut out).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    assert!(
+        text.contains("warning: could not register claude code mcp"),
+        "{text}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.path().join(".claude.json")).unwrap(),
+        "{ nope"
+    );
 }

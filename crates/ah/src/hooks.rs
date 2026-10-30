@@ -177,6 +177,114 @@ pub fn ensure_hooks(claude_dir: Option<&Path>) -> std::io::Result<HookStatus> {
     Ok(HookStatus::Installed)
 }
 
+#[derive(Debug, PartialEq)]
+pub enum McpStatus {
+    NotApplicable,
+    Registered,
+    /// An entry that passes `is_ours_mcp` already exists.
+    Present,
+    /// `agent-hub` is taken by a different config; left alone.
+    Foreign,
+}
+
+const MCP_NAME: &str = "agent-hub";
+
+/// Claude Code keeps user-scope MCP servers in `~/.claude.json`, next to `~/.claude`.
+/// ponytail: CLAUDE_CONFIG_DIR is not honoured; add it if relocated configs matter.
+pub fn claude_mcp_file(claude_dir: &Path) -> PathBuf {
+    let home = claude_dir.parent().unwrap_or(claude_dir);
+    home.join(".claude.json")
+}
+
+pub fn cursor_mcp_file(cursor_dir: &Path) -> PathBuf {
+    cursor_dir.join("mcp.json")
+}
+
+/// Ours: a server whose command is `ah` (bare, or a path ending in `ah` / `ah.exe`) and whose
+/// first argument is `mcp`.
+fn is_ours_mcp(server: &Value) -> bool {
+    let Some(command) = server.get("command").and_then(Value::as_str) else {
+        return false;
+    };
+    let name = command.rsplit(['/', '\\']).next().unwrap_or("");
+    let first = server["args"].get(0).and_then(Value::as_str);
+    (name == "ah" || name == "ah.exe") && first == Some("mcp")
+}
+
+fn mcp_servers(doc: &Value) -> Option<&serde_json::Map<String, Value>> {
+    doc.get("mcpServers").and_then(Value::as_object)
+}
+
+/// Adds `mcpServers.agent-hub` (`{"type": "stdio", "command": "ah", "args": ["mcp"]}`) to the
+/// MCP config file unless an entry under any name passes `is_ours_mcp`. Nothing else in the file
+/// is touched; it is left alone when nothing is missing or when it does not parse.
+pub fn ensure_mcp(file: Option<&Path>) -> std::io::Result<McpStatus> {
+    let Some(file) = file else {
+        return Ok(McpStatus::NotApplicable);
+    };
+    let mut doc = load(file)?;
+    if mcp_servers(&doc).is_some_and(|m| m.values().any(is_ours_mcp)) {
+        return Ok(McpStatus::Present);
+    }
+    let root = doc
+        .as_object_mut()
+        .ok_or_else(|| invalid("not an object"))?;
+    let servers = root
+        .entry("mcpServers")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .ok_or_else(|| invalid("mcpServers is not an object"))?;
+    if servers.contains_key(MCP_NAME) {
+        return Ok(McpStatus::Foreign);
+    }
+    servers.insert(
+        MCP_NAME.into(),
+        json!({"type": "stdio", "command": "ah", "args": ["mcp"]}),
+    );
+    save(file, &doc)?;
+    Ok(McpStatus::Registered)
+}
+
+/// Removes `mcpServers.agent-hub` when it passes `is_ours_mcp` (and the `mcpServers` object if
+/// that empties it). Returns whether an entry was removed.
+pub fn uninstall_mcp(file: Option<&Path>) -> std::io::Result<bool> {
+    let Some(file) = file.filter(|f| f.exists()) else {
+        return Ok(false);
+    };
+    let mut doc = load(file)?;
+    let Some(root) = doc.as_object_mut() else {
+        return Err(invalid("not an object"));
+    };
+    let Some(servers) = root.get_mut("mcpServers").and_then(Value::as_object_mut) else {
+        return Ok(false);
+    };
+    if !servers.get(MCP_NAME).is_some_and(is_ours_mcp) {
+        return Ok(false);
+    }
+    servers.shift_remove(MCP_NAME);
+    if servers.is_empty() {
+        root.shift_remove("mcpServers");
+    }
+    save(file, &doc)?;
+    Ok(true)
+}
+
+/// MCP registration state for `ah hooks status`.
+pub fn mcp_status(file: Option<&Path>) -> std::io::Result<&'static str> {
+    let Some(file) = file else {
+        return Ok("not applicable (editor not found, or AH_NO_HOOKS=1)");
+    };
+    let doc = load(file)?;
+    let servers = mcp_servers(&doc);
+    Ok(if servers.is_some_and(|m| m.values().any(is_ours_mcp)) {
+        "registered"
+    } else if servers.is_some_and(|m| m.contains_key(MCP_NAME)) {
+        "not registered (agent-hub is configured differently; left alone)"
+    } else {
+        "not registered"
+    })
+}
+
 /// Where hooks go; None skips that target (app not found, or AH_NO_HOOKS=1).
 #[derive(Debug, Default, Clone)]
 pub struct HookDirs {
@@ -233,6 +341,16 @@ pub fn ensure_and_report(dirs: &HookDirs, out: &mut impl Write) -> std::io::Resu
             ensure_cursor_hooks(dirs.cursor.as_deref()),
         ),
     ];
+    let mcp = [
+        (
+            "claude code",
+            ensure_mcp(dirs.claude.as_deref().map(claude_mcp_file).as_deref()),
+        ),
+        (
+            "cursor",
+            ensure_mcp(dirs.cursor.as_deref().map(cursor_mcp_file).as_deref()),
+        ),
+    ];
     let mut any = false;
     for (label, names, result) in targets {
         match result {
@@ -251,6 +369,21 @@ pub fn ensure_and_report(dirs: &HookDirs, out: &mut impl Write) -> std::io::Resu
             }
             Ok(HookStatus::NotApplicable) => {}
             Err(e) => writeln!(out, "warning: could not install {label}: {e}")?,
+        }
+    }
+    for (label, result) in mcp {
+        match result {
+            Ok(McpStatus::Registered) => writeln!(
+                out,
+                "{label} mcp registered ({MCP_NAME}); remove with ah hooks uninstall"
+            )?,
+            Ok(McpStatus::Present) => writeln!(out, "{label} mcp already registered")?,
+            Ok(McpStatus::Foreign) => writeln!(
+                out,
+                "{label} mcp: {MCP_NAME} is configured differently; left alone"
+            )?,
+            Ok(McpStatus::NotApplicable) => {}
+            Err(e) => writeln!(out, "warning: could not register {label} mcp: {e}")?,
         }
     }
     if !any {
@@ -924,5 +1057,46 @@ mod tests {
             Some("completed"),
             Some(CURSOR_LOOP_LIMIT)
         )));
+    }
+
+    fn read(p: &Path) -> Value {
+        serde_json::from_slice(&std::fs::read(p).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn mcp_is_ours_matches_ah_mcp_only() {
+        let ours = |c: &str, a: Value| is_ours_mcp(&json!({"command": c, "args": a}));
+        assert!(ours("ah", json!(["mcp"])));
+        assert!(ours("/usr/local/bin/ah", json!(["mcp", "--name", "x"])));
+        assert!(ours("C:\\bin\\ah.exe", json!(["mcp"])));
+        assert!(!ours("ah", json!(["wait"])));
+        assert!(!ours("yeah", json!(["mcp"])));
+        assert!(!ours("ah", json!([])));
+        assert!(!is_ours_mcp(&json!({"url": "https://x"})));
+    }
+
+    #[test]
+    fn mcp_register_preserves_file_and_is_idempotent() {
+        let home = tempfile::tempdir().unwrap();
+        let file = home.path().join(".claude.json");
+        std::fs::write(
+            &file,
+            r#"{"zeta": 1, "mcpServers": {"other": {"command": "x", "args": ["y"], "weird": [1, {"a": null}]}}, "alpha": {"k": true}}"#,
+        )
+        .unwrap();
+        assert_eq!(ensure_mcp(Some(&file)).unwrap(), McpStatus::Registered);
+        let v = read(&file);
+        assert_eq!(
+            v.as_object().unwrap().keys().collect::<Vec<_>>(),
+            ["zeta", "mcpServers", "alpha"]
+        );
+        assert_eq!(v["mcpServers"]["other"]["weird"], json!([1, {"a": null}]));
+        assert_eq!(
+            v["mcpServers"][MCP_NAME],
+            json!({"type": "stdio", "command": "ah", "args": ["mcp"]})
+        );
+        let before = std::fs::read(&file).unwrap();
+        assert_eq!(ensure_mcp(Some(&file)).unwrap(), McpStatus::Present);
+        assert_eq!(std::fs::read(&file).unwrap(), before);
     }
 }

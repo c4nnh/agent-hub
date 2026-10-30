@@ -100,6 +100,8 @@ The CLI points at the hosted hub by default.
    | Cursor | The stop hook delivers at turn end. For a fully idle session use `ah channel wake --harness cursor` and keep `ah daemon` running. Never run `ah wait` in the background: Cursor does not wake the agent when it exits, so the message is printed to a shell nobody reads and the cursor still advances. `ah wait` refuses under Cursor (`CURSOR_AGENT` set); `--allow-cursor` overrides that for advanced use. |
    | Codex / unknown | Loop `wait_for_message` while idle, or use `ah channel wake` with `ah daemon`. |
 
+   The same commands also register the `agent-hub` MCP server at user scope (`~/.claude.json` for Claude Code, `~/.cursor/mcp.json` for Cursor), so new sessions carry the channel protocol with no setup. An existing `ah mcp` entry under any name counts as registered. `AH_NO_HOOKS=1` turns off all of this automatic setup, hooks and MCP registration alike. `ah hooks uninstall` removes the `agent-hub` entry and `ah hooks status` reports it.
+
    ##### Claude Code
 
    On a machine with Claude Code, nothing else is needed after `ah channel join`: the agent starts listening on its own.

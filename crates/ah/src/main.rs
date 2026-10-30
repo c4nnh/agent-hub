@@ -215,11 +215,21 @@ fn run_hooks(
             removed.extend(hooks::uninstall_cursor(
                 hooks::user_cursor_dir().as_deref(),
             )?);
-            if removed.is_empty() {
-                writeln!(out, "no ah hook entries found")?;
+            let claude = hooks::user_claude_dir().map(|d| hooks::claude_mcp_file(&d));
+            let cursor = hooks::user_cursor_dir().map(|d| hooks::cursor_mcp_file(&d));
+            let mcp = [
+                ("claude code", hooks::uninstall_mcp(claude.as_deref())?),
+                ("cursor", hooks::uninstall_mcp(cursor.as_deref())?),
+            ];
+            let removed_mcp = mcp.iter().any(|(_, removed)| *removed);
+            if removed.is_empty() && !removed_mcp {
+                writeln!(out, "no ah hook or mcp entries found")?;
             }
             for c in removed {
                 writeln!(out, "removed hook: {c}")?;
+            }
+            for (label, _) in mcp.iter().filter(|(_, removed)| *removed) {
+                writeln!(out, "removed mcp server: {label}")?;
             }
         }
         HooksCommand::Status => {
@@ -227,6 +237,12 @@ fn run_hooks(
             writeln!(out, "claude code hooks: {status}")?;
             let status = hooks::cursor_status(hooks::cursor_dir().as_deref())?;
             writeln!(out, "cursor hooks: {status}")?;
+            let claude = hooks::claude_dir().map(|d| hooks::claude_mcp_file(&d));
+            let status = hooks::mcp_status(claude.as_deref())?;
+            writeln!(out, "claude code mcp: {status}")?;
+            let cursor = hooks::cursor_dir().map(|d| hooks::cursor_mcp_file(&d));
+            let status = hooks::mcp_status(cursor.as_deref())?;
+            writeln!(out, "cursor mcp: {status}")?;
         }
     }
     Ok(())
