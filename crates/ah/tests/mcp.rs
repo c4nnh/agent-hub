@@ -503,7 +503,7 @@ async fn wait_delivery_advances_shared_cursor(pool: PgPool) {
         folder: Some(h.dir.path().to_path_buf()),
         channel: None,
         name: Some("waiter".into()),
-        drain: None,
+        ..Default::default()
     };
     let mut out = Vec::new();
     let second = tokio::time::timeout(

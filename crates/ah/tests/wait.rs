@@ -3,7 +3,7 @@ use ah::{
     client::HubClient,
     commands::{
         channel::run_join,
-        wait::{Refusal, WaitArgs, Waiter, run_wait},
+        wait::{CURSOR_REFUSAL, Refusal, WaitArgs, Waiter, run_wait},
     },
     cursors::listener_alive,
 };
@@ -113,6 +113,7 @@ async fn wait_once_with(
         channel: None,
         name: Some(ME.into()),
         drain,
+        ..Default::default()
     };
     let mut out = Vec::new();
     tokio::time::timeout(LIMIT, run_wait(e.cfg.path(), &e.c, args, &mut out))
@@ -181,6 +182,40 @@ async fn self_messages_filtered(pool: PgPool) {
     let got = got.unwrap();
     assert_eq!(got.len(), 1, "{got:?}");
     assert_eq!(got[0]["body"], "theirs");
+}
+
+#[sqlx::test(migrations = "../hub/migrations")]
+async fn cursor_env_refuses_before_pidfile_unless_allowed(pool: PgPool) {
+    let e = env(&pool).await;
+    let args = |allow_cursor| WaitArgs {
+        folder: Some(e.folder.path().to_path_buf()),
+        name: Some(ME.into()),
+        cursor_env: true,
+        allow_cursor,
+        ..Default::default()
+    };
+    let mut out = Vec::new();
+    let err = run_wait(e.cfg.path(), &e.c, args(false), &mut out)
+        .await
+        .unwrap_err();
+    let refusal = err.downcast_ref::<Refusal>().expect("a Refusal");
+    assert_eq!(refusal.0, CURSOR_REFUSAL);
+    assert!(
+        refusal
+            .0
+            .starts_with("on Cursor, a background ah wait swallows messages:")
+    );
+    assert!(!e.cfg.path().join("wait-pids").exists());
+    assert!(out.is_empty());
+
+    // With the override it proceeds: nothing refuses it, so it parks until the timeout.
+    let mut out = Vec::new();
+    let parked = tokio::time::timeout(
+        Duration::from_millis(800),
+        run_wait(e.cfg.path(), &e.c, args(true), &mut out),
+    )
+    .await;
+    assert!(parked.is_err(), "{parked:?}");
 }
 
 #[sqlx::test(migrations = "../hub/migrations")]

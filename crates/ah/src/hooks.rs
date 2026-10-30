@@ -203,7 +203,19 @@ impl HookDirs {
     }
 }
 
-pub const NO_HOOKS: &str = "no editor hooks installed; to stay reachable, this agent must listen: run `ah wait` in the background after each turn (harnesses that wake on background-command completion), or loop the wait_for_message MCP tool while idle.";
+pub const NO_HOOKS: &str = "no editor hooks installed; to stay reachable, this agent must listen: loop the wait_for_message MCP tool while idle. Do not run `ah wait` in the background: Codex and unknown harnesses do not wake on background-command completion. Alternatively set `ah channel wake` for this folder and keep `ah daemon` running.";
+/// Reported after the cursor hook line: the hook only delivers at turn end.
+const CURSOR_PARK: &str = "for a fully idle session, set ah channel wake --harness cursor and keep ah daemon running; do not run ah wait in the background";
+
+fn cursor_note(label: &str, out: &mut impl Write) -> std::io::Result<()> {
+    if label == "cursor hook" {
+        writeln!(
+            out,
+            "  the stop hook delivers messages at turn end; {CURSOR_PARK}"
+        )?;
+    }
+    Ok(())
+}
 
 /// Ensures every detected target for the auth and join call sites and says how the agent stays
 /// reachable: one line per target, or the manual listening rule when none applies. Install
@@ -230,10 +242,12 @@ pub fn ensure_and_report(dirs: &HookDirs, out: &mut impl Write) -> std::io::Resu
                     out,
                     "{label} installed ({names}); remove with ah hooks uninstall"
                 )?;
+                cursor_note(label, out)?;
             }
             Ok(HookStatus::Unchanged) => {
                 any = true;
                 writeln!(out, "{label} present ({names})")?;
+                cursor_note(label, out)?;
             }
             Ok(HookStatus::NotApplicable) => {}
             Err(e) => writeln!(out, "warning: could not install {label}: {e}")?,

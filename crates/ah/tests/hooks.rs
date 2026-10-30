@@ -378,7 +378,7 @@ fn report_names_each_target_or_falls_back() {
     };
     let none = report(&hooks::HookDirs::default());
     assert_eq!(none.trim_end(), hooks::NO_HOOKS);
-    assert!(none.contains("ah wait") && none.contains("wait_for_message"));
+    assert!(none.contains("wait_for_message") && none.contains("ah daemon"));
 
     let cursor_only = hooks::HookDirs {
         claude: None,
@@ -393,6 +393,12 @@ fn report_names_each_target_or_falls_back() {
         !text.contains("claude") && !text.contains("no editor hooks"),
         "{text}"
     );
+    assert!(
+        text.contains("ah channel wake --harness cursor")
+            && text.contains("keep ah daemon running")
+            && text.contains("do not run ah wait in the background"),
+        "{text}"
+    );
 
     let both = hooks::HookDirs {
         claude: Some(home.path().join(".claude")),
@@ -404,7 +410,11 @@ fn report_names_each_target_or_falls_back() {
         text.contains("cursor hook present (ah hook cursor-stop)"),
         "{text}"
     );
-    assert_eq!(text.lines().count(), 2, "{text}");
+    assert!(
+        text.contains("do not run ah wait in the background"),
+        "{text}"
+    );
+    assert_eq!(text.lines().count(), 3, "{text}");
     let text = report(&both);
     assert!(text.contains("claude code hooks present") && text.contains("cursor hook present"));
 }

@@ -68,6 +68,9 @@ enum Command {
         /// Agent name whose own messages are ignored; default as for `ah mcp`
         #[arg(long)]
         name: Option<String>,
+        /// Run even under Cursor, where a background wait swallows messages
+        #[arg(long)]
+        allow_cursor: bool,
     },
 }
 
@@ -271,6 +274,7 @@ async fn run(cli: Cli, dir: &std::path::Path) -> Result<(), Box<dyn std::error::
             channel,
             folder,
             name,
+            allow_cursor,
         } => {
             let creds = Credentials::load(dir)?.ok_or("not logged in; run `ah auth login`")?;
             let client = HubClient::new(cfg.hub_url.clone(), Some(creds.token));
@@ -278,6 +282,8 @@ async fn run(cli: Cli, dir: &std::path::Path) -> Result<(), Box<dyn std::error::
                 folder,
                 channel,
                 name,
+                cursor_env: std::env::var_os("CURSOR_AGENT").is_some(),
+                allow_cursor,
                 ..Default::default()
             };
             wait::run_wait(dir, &client, args, &mut out)

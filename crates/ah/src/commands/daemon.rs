@@ -38,7 +38,7 @@ const TICK: Duration = Duration::from_secs(15);
 /// How often bindings.json is re-read for new, changed or removed wake folders.
 const REFRESH: Duration = Duration::from_secs(60);
 
-pub const WAKE_PROMPT: &str = "New Agent Hub messages are waiting in this folder's channels. Read them with the agent-hub MCP tools or by running ah wait, handle them, reply with send_message, and keep listening while idle.";
+pub const WAKE_PROMPT: &str = "New Agent Hub messages are waiting in this folder's channels. Read them with the agent-hub MCP tools (wait_for_message returns the backlog immediately), handle them, and reply with send_message. When you are done, finish and exit; the daemon will wake you again when new messages arrive.";
 
 /// Known wake command template for a harness name.
 pub fn harness_template(harness: &str) -> Option<&'static str> {

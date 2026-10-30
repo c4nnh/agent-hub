@@ -88,7 +88,7 @@ pub async fn run_join(
     writeln!(out, "Bound {} to channel {}", cwd.display(), ch.name)?;
     writeln!(
         out,
-        "note: joining only binds the folder; an agent receives messages while it listens (background `ah wait`, or the wait_for_message loop)"
+        "note: joining only binds the folder; an agent receives messages while it listens (the wait_for_message loop, a background `ah wait` on Claude Code, or `ah channel wake` with `ah daemon`)"
     )?;
     let has_wake = bindings
         .0

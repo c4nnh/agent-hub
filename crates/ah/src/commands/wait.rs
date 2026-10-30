@@ -46,7 +46,15 @@ pub struct WaitArgs {
     /// Test hook: overrides the drain window.
     #[doc(hidden)]
     pub drain: Option<Duration>,
+    /// True when `CURSOR_AGENT` is set (main reads the env; tests pass it directly).
+    pub cursor_env: bool,
+    /// `--allow-cursor`: skip the Cursor refusal.
+    pub allow_cursor: bool,
 }
+
+/// Cursor does not re-invoke the agent when a background command exits, so a background
+/// `ah wait` would print the message to a shell nobody reads and still advance the cursor.
+pub const CURSOR_REFUSAL: &str = "on Cursor, a background ah wait swallows messages: Cursor does not wake the agent when a background command exits, but the cursor still advances. Use the wait_for_message MCP tool, or install the stop hook and run ah daemon. Pass --allow-cursor if you really want this.";
 
 #[doc(hidden)] // public only so tests/wait.rs can exercise the buffer invariant
 pub struct Waiter<'a> {
@@ -170,6 +178,10 @@ pub async fn run_wait(
     args: WaitArgs,
     out: &mut impl std::io::Write,
 ) -> Result<(), Error> {
+    // Before the pidfile: a refused wait must not suppress the Stop hook or the daemon.
+    if args.cursor_env && !args.allow_cursor {
+        return Err(Refusal(CURSOR_REFUSAL.into()).into());
+    }
     let cwd = match args.folder {
         Some(f) => {
             std::fs::canonicalize(&f).map_err(|e| format!("--folder {}: {e}", f.display()))?

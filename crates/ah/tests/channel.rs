@@ -535,7 +535,7 @@ async fn join_reports_reachability_per_harness(pool: PgPool) {
     let out = join(HookDirs::detect_in(home.path(), false, false)).await;
     assert!(out.contains("no editor hooks installed"), "{out}");
     assert!(
-        out.contains("ah wait") && out.contains("wait_for_message"),
+        out.contains("wait_for_message") && out.contains("ah daemon"),
         "{out}"
     );
 

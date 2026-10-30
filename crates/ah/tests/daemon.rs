@@ -143,6 +143,10 @@ async fn wakes_once_without_touching_the_cursor(pool: PgPool) {
         std::fs::canonicalize(&e.folder).unwrap()
     );
     assert_eq!(lines.next(), Some(WAKE_PROMPT));
+    assert_eq!(
+        WAKE_PROMPT,
+        "New Agent Hub messages are waiting in this folder's channels. Read them with the agent-hub MCP tools (wait_for_message returns the backlog immediately), handle them, and reply with send_message. When you are done, finish and exit; the daemon will wake you again when new messages arrive."
+    );
     assert_eq!(lines.next(), None);
     assert!(e.watch.last_woken_id > 0);
     let cursors = Cursors::load_folder(e.cfg.path(), &e.folder).unwrap();
