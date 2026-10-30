@@ -265,17 +265,44 @@ pub fn mcp_write(needs_add: bool, claude_on_path: bool) -> McpWrite {
 }
 
 fn add_via_claude(entry: &Value) -> std::io::Result<()> {
-    let output = std::process::Command::new("claude")
-        .args([
-            "mcp",
-            "add-json",
-            "-s",
-            "user",
-            MCP_NAME,
-            &entry.to_string(),
-        ])
-        .stdin(std::process::Stdio::null())
-        .output()?;
+    let mut cmd = std::process::Command::new("claude");
+    cmd.args([
+        "mcp",
+        "add-json",
+        "-s",
+        "user",
+        MCP_NAME,
+        &entry.to_string(),
+    ]);
+    run_capped(cmd, CLAUDE_TIMEOUT)
+}
+
+const CLAUDE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Runs `cmd` and fails on a non-zero exit. A hung `claude` must not freeze login or join, so
+/// the child is killed after `limit`.
+/// ponytail: output is read only after exit; a child that fills the pipe buffer would stall
+/// until the cap kills it. `claude mcp add-json` prints one line.
+fn run_capped(mut cmd: std::process::Command, limit: Duration) -> std::io::Result<()> {
+    use std::process::Stdio;
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let start = std::time::Instant::now();
+    while child.try_wait()?.is_none() {
+        if start.elapsed() >= limit {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(std::io::Error::other(format!(
+                "claude mcp add-json timed out after {}s",
+                limit.as_secs()
+            )));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let output = child.wait_with_output()?;
     if output.status.success() {
         return Ok(());
     }
@@ -1109,6 +1136,23 @@ mod tests {
 
     fn read(p: &Path) -> Value {
         serde_json::from_slice(&std::fs::read(p).unwrap()).unwrap()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_capped_kills_a_hung_child_and_reports_exit_codes() {
+        let sh = |script: &str| {
+            let mut c = std::process::Command::new("sh");
+            c.args(["-c", script]);
+            c
+        };
+        let start = std::time::Instant::now();
+        let err = run_capped(sh("sleep 60"), Duration::from_millis(300)).unwrap_err();
+        assert!(err.to_string().contains("timed out"), "{err}");
+        assert!(start.elapsed() < Duration::from_secs(10));
+        assert!(run_capped(sh("exit 0"), Duration::from_secs(5)).is_ok());
+        let err = run_capped(sh("echo boom >&2; exit 3"), Duration::from_secs(5)).unwrap_err();
+        assert!(err.to_string().contains("boom"), "{err}");
     }
 
     #[test]
