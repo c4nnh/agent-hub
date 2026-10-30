@@ -355,6 +355,12 @@ async fn cursor_stop_delivers_once_and_shares_the_cursor(pool: PgPool) {
     assert!(msg.ends_with(hooks::CURSOR_FOLLOWUP_CLOSE), "{msg}");
     let advanced = Cursors::load_folder(e.cfg.path(), &folder).unwrap()[&e.channel];
     assert!(advanced > seeded);
+    // The hook reports under the Cursor MCP name even though CURSOR_AGENT is not set here.
+    let state = e.c.delivery(e.channel).await.unwrap();
+    let names: Vec<_> = state.agents.iter().map(|a| a.agent_name.as_str()).collect();
+    let want_name = ah::mcp::agent_name("cursor", e.folder.path());
+    assert_eq!(names, vec![want_name.as_str()]);
+    assert_eq!(state.agents[0].last_read_id, advanced);
 
     // Delivered: the next stop is quiet, and ah wait does not reprint it.
     assert_eq!(stop().await, "");

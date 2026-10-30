@@ -161,14 +161,18 @@ async fn cursor_never_moves_back(pool: PgPool) {
     let app = hub(pool.clone());
     let t = user(&pool, "a@x.co").await;
     let ch = new_channel(&app, &t).await;
-    for value in [10, 4, 12] {
+    let mut ids = Vec::new();
+    for _ in 0..3 {
+        ids.push(post_message(&app, &t, ch).await);
+    }
+    for value in [ids[1], ids[0], ids[2]] {
         let body = serde_json::json!({"agent_name": "bot", "last_read_id": value});
         assert_eq!(put(&app, &t, ch, body).await, StatusCode::NO_CONTENT);
     }
-    assert_eq!(delivery(&app, &t, ch).await.agents[0].last_read_id, 12);
-    let body = serde_json::json!({"agent_name": "bot", "last_read_id": 3});
+    assert_eq!(delivery(&app, &t, ch).await.agents[0].last_read_id, ids[2]);
+    let body = serde_json::json!({"agent_name": "bot", "last_read_id": ids[0]});
     assert_eq!(put(&app, &t, ch, body).await, StatusCode::NO_CONTENT);
-    assert_eq!(delivery(&app, &t, ch).await.agents[0].last_read_id, 12);
+    assert_eq!(delivery(&app, &t, ch).await.agents[0].last_read_id, ids[2]);
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -292,4 +296,18 @@ async fn cursors_are_deleted_with_the_channel(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(rows, 0);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn report_beyond_the_tail_stores_the_tail(pool: PgPool) {
+    let app = hub(pool.clone());
+    let t = user(&pool, "a@x.co").await;
+    let ch = new_channel(&app, &t).await;
+    let id = post_message(&app, &t, ch).await;
+    let body = serde_json::json!({"agent_name": "bot", "last_read_id": id + 1000});
+    assert_eq!(put(&app, &t, ch, body).await, StatusCode::NO_CONTENT);
+    assert_eq!(delivery(&app, &t, ch).await.agents[0].last_read_id, id);
+    let body = serde_json::json!({"agent_name": "bot", "last_read_id": id + 5});
+    assert_eq!(put(&app, &t, ch, body).await, StatusCode::NO_CONTENT);
+    assert_eq!(delivery(&app, &t, ch).await.agents[0].last_read_id, id);
 }

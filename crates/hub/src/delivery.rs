@@ -31,8 +31,12 @@ pub async fn report(
         tracing::warn!(user_id = %u.id, %channel_id, name_len, last_read_id = body.last_read_id, "invalid agent cursor");
         return Err(StatusCode::BAD_REQUEST);
     }
+    // Clamped to the channel tail: a client cannot report past messages that exist, and
+    // greatest() would make an inflated value permanent.
     sqlx::query(
-        "insert into agent_cursors (channel_id, agent_name, last_read_id) values ($1, $2, $3)
+        "with tail as (select coalesce(max(id), 0) as id from messages where channel_id = $1)
+         insert into agent_cursors (channel_id, agent_name, last_read_id)
+         select $1, $2, least($3, tail.id) from tail
          on conflict (channel_id, agent_name) do update
          set last_read_id = greatest(agent_cursors.last_read_id, excluded.last_read_id),
              updated_at = now()",

@@ -921,7 +921,9 @@ pub async fn run_cursor_stop(
     // than losing the messages.
     if !cursors.is_empty() {
         Cursors::advance(dir, &key, &cursors)?;
-        client.report_agent_cursors(&own[0], &cursors).await;
+        // Fixed name, not own[0]: this hook may not see CURSOR_AGENT, but the MCP session it
+        // reports for is always cursor@host/folder.
+        client.report_agent_cursors(&own[1], &cursors).await;
     }
     Ok(())
 }

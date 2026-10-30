@@ -86,7 +86,8 @@ impl Session {
         if let Err(error) = Cursors::seed(dir, &folder, &seeds) {
             tracing::warn!(%error, "could not write cursors");
         }
-        Ok(Arc::new(Self {
+        let initial: BTreeMap<Uuid, i64> = cursors.iter().map(|(k, v)| (*k, *v)).collect();
+        let session = Arc::new(Self {
             client,
             agent_name,
             folder,
@@ -98,7 +99,11 @@ impl Session {
                 ..Inbox::default()
             }),
             arrived: Notify::new(),
-        }))
+        });
+        // The seeded cursors are what this session has delivered so far; tell the hub now so it
+        // does not show a fresh session as behind. Background: startup never waits on it.
+        session.report(initial);
+        Ok(session)
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inbox> {
