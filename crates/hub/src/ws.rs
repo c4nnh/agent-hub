@@ -134,7 +134,7 @@ impl Registry {
         }
     }
 
-    fn agents(&self, channel_id: Uuid) -> Vec<AgentPresence> {
+    pub(crate) fn agents(&self, channel_id: Uuid) -> Vec<AgentPresence> {
         let map = self.lock();
         let mut found: Vec<AgentPresence> = map
             .get(&channel_id)

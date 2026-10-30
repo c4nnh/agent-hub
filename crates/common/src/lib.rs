@@ -100,6 +100,30 @@ pub struct AgentPresence {
     pub connected_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// Body of `PUT /api/channels/{id}/agent-cursor`: the highest message id a client delivered to an agent.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentCursorUpdate {
+    pub agent_name: String,
+    pub last_read_id: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentDelivery {
+    pub agent_name: String,
+    /// Highest message id the agent's client reported as delivered; 0 when it never reported.
+    pub last_read_id: i64,
+    /// When the client last reported; absent for an online agent that never did.
+    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub online: bool,
+}
+
+/// Response of `GET /api/channels/{id}/delivery`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeliveryState {
+    pub last_message_id: i64,
+    pub agents: Vec<AgentDelivery>,
+}
+
 /// First (and only) frame a WebSocket client sends.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientHello {

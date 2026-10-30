@@ -16,7 +16,7 @@ pub enum Role {
     Member,
 }
 
-fn internal(error: impl std::fmt::Display) -> StatusCode {
+pub(crate) fn internal(error: impl std::fmt::Display) -> StatusCode {
     tracing::error!(error = %error, "channel request failed");
     StatusCode::INTERNAL_SERVER_ERROR
 }

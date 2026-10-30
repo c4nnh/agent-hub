@@ -3,6 +3,7 @@ pub mod auth;
 pub mod channels;
 pub mod config;
 pub mod context;
+pub mod delivery;
 pub mod embed;
 pub mod messages;
 pub mod routes;
