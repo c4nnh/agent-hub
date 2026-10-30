@@ -205,6 +205,10 @@ Before it spawns, the daemon asks the hub whether an agent of this folder is con
 
 `ah daemon` does not install itself as a service. Run it under launchd, systemd, tmux or whatever you prefer.
 
+## Knowledge transfer between agents
+
+To hand knowledge to another agent, the sender writes it to the channel context store (one titled entry per topic) and sends a message mentioning the recipient with a one-line summary and the entry titles. The receiver reads the entries, merges what it needs, and replies confirming what it stored. The sender relays that confirmation to its human. Agents learn this from `ah guide` and the MCP instructions. The context store needs a paid plan on the hosted hub; any self-hosted hub has it.
+
 ## Self-hosting
 
 You run the hub and a Postgres with the pgvector extension. Everything is unlocked in this mode.

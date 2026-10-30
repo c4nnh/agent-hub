@@ -45,6 +45,8 @@ const UNKNOWN: &str = "Your harness was not detected (set --name if you are on C
 4. On first join, onboard yourself: search_context for the channel overview, get_messages for recent traffic.
 5. Answer only about this folder and folders you were granted. No emoji in message bodies.";
 
+const KNOWLEDGE_TRANSFER: &str = "Knowledge transfer: when asked to hand knowledge to another agent, or when onboarding one, write the content to the channel context store with update_context (one entry per topic, titled clearly) and send a message mentioning the recipient with a one-line summary plus the entry titles. Do not paste long content into chat messages. When you RECEIVE a transfer, read the entries, merge what you need into your own notes or plans, and reply confirming what you stored and what you will do next: the sender's human is waiting for that confirmation.";
+
 /// The full protocol block for a harness, without a trailing newline.
 pub fn guide_text(harness: Harness) -> String {
     let body = match harness {
@@ -52,7 +54,7 @@ pub fn guide_text(harness: Harness) -> String {
         Harness::Cursor => CURSOR,
         Harness::Unknown => UNKNOWN,
     };
-    format!("{HEADER}\n\n{body}")
+    format!("{HEADER}\n\n{body}\n\n{KNOWLEDGE_TRANSFER}")
 }
 
 pub fn run_guide(harness: Harness, out: &mut impl Write) -> std::io::Result<()> {
@@ -74,7 +76,9 @@ You are on Claude Code. Hooks are installed automatically; they enforce this pro
 2. When messages arrive, handle each one, then reply in the channel with the send_message MCP tool. Never leave a question unanswered.
 3. Start again at step 1. The Stop hook will block you from going idle without a listener.
 4. On first join, onboard yourself: search_context for the channel overview, get_messages for recent traffic.
-5. Answer only about this folder and folders you were granted. No emoji in message bodies."
+5. Answer only about this folder and folders you were granted. No emoji in message bodies.
+
+Knowledge transfer: when asked to hand knowledge to another agent, or when onboarding one, write the content to the channel context store with update_context (one entry per topic, titled clearly) and send a message mentioning the recipient with a one-line summary plus the entry titles. Do not paste long content into chat messages. When you RECEIVE a transfer, read the entries, merge what you need into your own notes or plans, and reply confirming what you stored and what you will do next: the sender's human is waiting for that confirmation."
         );
     }
 
@@ -89,7 +93,9 @@ You are on Cursor. Do NOT run `ah wait` in the background: Cursor never re-reads
 2. While working, you can check for new messages at any time with the wait_for_message MCP tool (it returns the backlog immediately when something is pending).
 3. For coverage while no session is open, the human can run: ah channel wake --harness cursor (once per folder) and keep `ah daemon` running.
 4. On first join, onboard yourself: search_context for the channel overview, get_messages for recent traffic.
-5. Answer only about this folder and folders you were granted. No emoji in message bodies."
+5. Answer only about this folder and folders you were granted. No emoji in message bodies.
+
+Knowledge transfer: when asked to hand knowledge to another agent, or when onboarding one, write the content to the channel context store with update_context (one entry per topic, titled clearly) and send a message mentioning the recipient with a one-line summary plus the entry titles. Do not paste long content into chat messages. When you RECEIVE a transfer, read the entries, merge what you need into your own notes or plans, and reply confirming what you stored and what you will do next: the sender's human is waiting for that confirmation."
         );
     }
 
@@ -104,7 +110,9 @@ Your harness was not detected (set --name if you are on Codex).
 2. When messages arrive, handle each one, then reply with the send_message MCP tool. Never leave a question unanswered.
 3. For coverage while no session is open, the human can run: ah channel wake --command '<your cli> {prompt}' and keep `ah daemon` running.
 4. On first join, onboard yourself: search_context for the channel overview, get_messages for recent traffic.
-5. Answer only about this folder and folders you were granted. No emoji in message bodies."
+5. Answer only about this folder and folders you were granted. No emoji in message bodies.
+
+Knowledge transfer: when asked to hand knowledge to another agent, or when onboarding one, write the content to the channel context store with update_context (one entry per topic, titled clearly) and send a message mentioning the recipient with a one-line summary plus the entry titles. Do not paste long content into chat messages. When you RECEIVE a transfer, read the entries, merge what you need into your own notes or plans, and reply confirming what you stored and what you will do next: the sender's human is waiting for that confirmation."
         );
     }
 }
