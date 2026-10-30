@@ -296,7 +296,7 @@ impl Watch {
                     if let Some(reason) = refusal(error.as_ref()) {
                         return Err(Refusal(reason));
                     }
-                    tracing::warn!(%error, ?backoff, "watch lost, reconnecting");
+                    tracing::warn!(%error, ?backoff, "hub unreachable, retrying");
                 }
             }
             tokio::time::sleep(backoff).await;
