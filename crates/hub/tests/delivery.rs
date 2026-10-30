@@ -311,3 +311,90 @@ async fn report_beyond_the_tail_stores_the_tail(pool: PgPool) {
     assert_eq!(put(&app, &t, ch, body).await, StatusCode::NO_CONTENT);
     assert_eq!(delivery(&app, &t, ch).await.agents[0].last_read_id, id);
 }
+
+async fn put_coverage(app: &Router, token: &str, channel: Uuid, suffix: &str) -> StatusCode {
+    let uri = format!("/api/channels/{channel}/coverage");
+    let body = serde_json::json!({ "suffix": suffix }).to_string();
+    call(app, Method::PUT, &uri, token, Some(body)).await.0
+}
+
+async fn report_cursor(app: &Router, token: &str, channel: Uuid, name: &str) {
+    let body = serde_json::json!({"agent_name": name, "last_read_id": 0});
+    assert_eq!(put(app, token, channel, body).await, StatusCode::NO_CONTENT);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn coverage_marks_matching_agents_for_sixty_seconds(pool: PgPool) {
+    let app = hub(pool.clone());
+    let t = user(&pool, "a@x.co").await;
+    let ch = new_channel(&app, &t).await;
+    report_cursor(&app, &t, ch, "cursor@mac/proj").await;
+    assert!(!delivery(&app, &t, ch).await.agents[0].covered);
+
+    assert_eq!(
+        put_coverage(&app, &t, ch, "@mac/proj").await,
+        StatusCode::NO_CONTENT
+    );
+    assert!(delivery(&app, &t, ch).await.agents[0].covered);
+
+    sqlx::query("update coverage set updated_at = now() - interval '61 seconds'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(!delivery(&app, &t, ch).await.agents[0].covered);
+
+    // A new heartbeat revives the same row.
+    assert_eq!(
+        put_coverage(&app, &t, ch, "@mac/proj").await,
+        StatusCode::NO_CONTENT
+    );
+    assert!(delivery(&app, &t, ch).await.agents[0].covered);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn coverage_matches_the_tail_only(pool: PgPool) {
+    let app = hub(pool.clone());
+    let t = user(&pool, "a@x.co").await;
+    let ch = new_channel(&app, &t).await;
+    for name in ["cursor@mac/proj", "cursor@mac/proj-two", "cursor@mac/other"] {
+        report_cursor(&app, &t, ch, name).await;
+    }
+    put_coverage(&app, &t, ch, "@mac/proj").await;
+    let covered: Vec<_> = delivery(&app, &t, ch)
+        .await
+        .agents
+        .into_iter()
+        .filter(|a| a.covered)
+        .map(|a| a.agent_name)
+        .collect();
+    assert_eq!(covered, ["cursor@mac/proj"]);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn coverage_rejects_bad_suffix_and_non_members(pool: PgPool) {
+    let app = hub(pool.clone());
+    let a = user(&pool, "a@x.co").await;
+    let b = user(&pool, "b@x.co").await;
+    let ch = new_channel(&app, &a).await;
+    let long = format!("@{}", "n".repeat(128));
+    for bad in ["", "mac/proj", long.as_str()] {
+        assert_eq!(
+            put_coverage(&app, &a, ch, bad).await,
+            StatusCode::BAD_REQUEST
+        );
+    }
+    let exact = format!("@{}", "n".repeat(127));
+    assert_eq!(
+        put_coverage(&app, &a, ch, &exact).await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        put_coverage(&app, &b, ch, "@mac/proj").await,
+        StatusCode::FORBIDDEN
+    );
+    let rows: i64 = sqlx::query_scalar("select count(*) from coverage where suffix = '@mac/proj'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(rows, 0);
+}

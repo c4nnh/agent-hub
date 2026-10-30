@@ -19,6 +19,10 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/api/channels/{id}/agents", get(ws::agents))
         .route("/api/channels/{id}/agent-cursor", put(delivery::report))
+        .route(
+            "/api/channels/{id}/coverage",
+            put(delivery::report_coverage),
+        )
         .route("/api/channels/{id}/delivery", get(delivery::state))
         .route(
             "/api/channels/{id}/context",

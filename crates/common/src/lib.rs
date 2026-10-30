@@ -107,6 +107,12 @@ pub struct AgentCursorUpdate {
     pub last_read_id: i64,
 }
 
+/// Body of `PUT /api/channels/{id}/coverage`: a daemon heartbeat for agents ending in `suffix`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CoverageUpdate {
+    pub suffix: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentDelivery {
     pub agent_name: String,
@@ -115,6 +121,9 @@ pub struct AgentDelivery {
     /// When the client last reported; absent for an online agent that never did.
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
     pub online: bool,
+    /// A daemon reported covering this agent within the last 60 seconds.
+    #[serde(default)]
+    pub covered: bool,
 }
 
 /// Response of `GET /api/channels/{id}/delivery`.

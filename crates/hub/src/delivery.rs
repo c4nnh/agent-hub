@@ -6,7 +6,7 @@ use crate::{
     channels::{internal, require_member},
     state::AppState,
 };
-use ah_common::{AgentCursorUpdate, AgentDelivery, DeliveryState};
+use ah_common::{AgentCursorUpdate, AgentDelivery, CoverageUpdate, DeliveryState};
 use axum::{
     Json,
     extract::{Path, State},
@@ -50,6 +50,31 @@ pub async fn report(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// A daemon heartbeat: it covers agents whose name ends with `suffix`. 204 on success.
+pub async fn report_coverage(
+    State(s): State<AppState>,
+    CurrentUser(u): CurrentUser,
+    Path(channel_id): Path<Uuid>,
+    Json(body): Json<CoverageUpdate>,
+) -> Result<StatusCode, StatusCode> {
+    require_member(&s.pool, u.id, channel_id).await?;
+    let len = body.suffix.chars().count();
+    if !(1..=MAX_NAME_CHARS).contains(&len) || !body.suffix.starts_with('@') {
+        tracing::warn!(user_id = %u.id, %channel_id, len, "invalid coverage suffix");
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    sqlx::query(
+        "insert into coverage (channel_id, suffix) values ($1, $2)
+         on conflict (channel_id, suffix) do update set updated_at = now()",
+    )
+    .bind(channel_id)
+    .bind(&body.suffix)
+    .execute(&s.pool)
+    .await
+    .map_err(internal)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub async fn state(
     State(s): State<AppState>,
     CurrentUser(u): CurrentUser,
@@ -69,6 +94,15 @@ pub async fn state(
     .fetch_all(&s.pool)
     .await
     .map_err(internal)?;
+    let fresh: Vec<String> = sqlx::query_scalar(
+        "select suffix from coverage
+         where channel_id = $1 and updated_at > now() - interval '60 seconds'",
+    )
+    .bind(channel_id)
+    .fetch_all(&s.pool)
+    .await
+    .map_err(internal)?;
+    let covered = |name: &str| fresh.iter().any(|suffix| name.ends_with(suffix.as_str()));
     let online: HashSet<String> = s
         .registry
         .agents(channel_id)
@@ -82,6 +116,7 @@ pub async fn state(
             (
                 agent_name.clone(),
                 AgentDelivery {
+                    covered: covered(&agent_name),
                     agent_name,
                     last_read_id,
                     updated_at: Some(updated_at),
@@ -91,11 +126,13 @@ pub async fn state(
         })
         .collect();
     for name in online {
+        let is_covered = covered(&name);
         merged.entry(name.clone()).or_insert(AgentDelivery {
             agent_name: name,
             last_read_id: 0,
             updated_at: None,
             online: true,
+            covered: is_covered,
         });
     }
     Ok(Json(DeliveryState {
