@@ -152,9 +152,13 @@ enum ChannelCommand {
         /// Use the known command for a harness
         #[arg(long, value_parser = ["cursor", "codex", "claude-code"], conflicts_with_all = ["command", "off"])]
         harness: Option<String>,
-        /// Custom command template; `{prompt}` is replaced with the wake prompt
+        /// Custom command template; `{prompt}` is replaced with the wake prompt. The reserved
+        /// word `notify` shows an OS notification instead of spawning an agent.
         #[arg(long, conflicts_with = "off")]
         command: Option<String>,
+        /// Show an OS notification when messages arrive (same as `--command notify`)
+        #[arg(long, conflicts_with_all = ["harness", "command", "off"])]
+        notify: bool,
         /// Remove the wake command
         #[arg(long)]
         off: bool,
@@ -382,6 +386,7 @@ async fn run(cli: Cli, dir: &std::path::Path) -> Result<(), Box<dyn std::error::
                     harness,
                     command,
                     off,
+                    notify,
                 } => channel::run_wake(
                     dir,
                     &cwd,
@@ -390,6 +395,7 @@ async fn run(cli: Cli, dir: &std::path::Path) -> Result<(), Box<dyn std::error::
                         harness,
                         command,
                         off,
+                        notify,
                     },
                     &mut out,
                 ),
@@ -478,5 +484,15 @@ mod tests {
             "x"
         ]));
         assert!(!ok(&["ah", "channel", "wake", "--off", "--command", "x"]));
+        assert!(ok(&["ah", "channel", "wake", "--notify"]));
+        assert!(!ok(&["ah", "channel", "wake", "--notify", "--off"]));
+        assert!(!ok(&[
+            "ah",
+            "channel",
+            "wake",
+            "--notify",
+            "--harness",
+            "codex"
+        ]));
     }
 }

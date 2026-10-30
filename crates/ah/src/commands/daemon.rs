@@ -4,6 +4,9 @@
 //! to learn what is undelivered, and it must never call `Cursors::advance` or `Cursors::seed`:
 //! delivery belongs to the woken agent's normal path (`ah wait` or the MCP gap-fill), which
 //! moves the cursor once the agent has the messages.
+//!
+//! Every pass also heartbeats coverage to the hub so senders can tell an offline agent that
+//! this daemon watches from one nobody watches.
 
 use crate::{
     bindings::Bindings,
@@ -40,6 +43,50 @@ const REFRESH: Duration = Duration::from_secs(60);
 
 pub const WAKE_PROMPT: &str = "New Agent Hub messages are waiting in this folder's channels. Read them with the agent-hub MCP tools (wait_for_message returns the backlog immediately), handle them, and reply with send_message. When you are done, finish and exit; the daemon will wake you again when new messages arrive.";
 
+/// Reserved wake command: show an OS notification instead of spawning anything.
+pub const NOTIFY: &str = "notify";
+
+pub fn is_notify(command: &str) -> bool {
+    command.trim() == NOTIFY
+}
+
+/// AppleScript that shows `body`. Quotes and backslashes are escaped and control characters
+/// dropped, because the body carries channel and sender names other members choose.
+pub fn applescript(body: &str) -> String {
+    let safe: String = body
+        .chars()
+        .filter(|c| !c.is_control())
+        .flat_map(|c| match c {
+            '"' | '\\' => vec!['\\', c],
+            _ => vec![c],
+        })
+        .collect();
+    format!("display notification \"{safe}\" with title \"Agent Hub\"")
+}
+
+/// Shows an OS notification. Failures are logged, never fatal.
+/// ponytail: blocks for the notifier process (~100ms); Windows has no notifier, a toast is the upgrade path.
+pub fn os_notify(body: &str) {
+    #[cfg(target_os = "macos")]
+    let result = Command::new("osascript")
+        .arg("-e")
+        .arg(applescript(body))
+        .status();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let result = Command::new("notify-send")
+        .arg("Agent Hub")
+        .arg(body)
+        .status();
+    #[cfg(not(unix))]
+    let result: std::io::Result<std::process::ExitStatus> = {
+        tracing::warn!("notify wake is not supported on this platform");
+        return;
+    };
+    if let Err(error) = result {
+        tracing::warn!(%error, "could not show notification");
+    }
+}
+
 /// Known wake command template for a harness name.
 pub fn harness_template(harness: &str) -> Option<&'static str> {
     match harness {
@@ -51,9 +98,13 @@ pub fn harness_template(harness: &str) -> Option<&'static str> {
 }
 
 /// Splits `template` into program and arguments, replacing `{prompt}` with `prompt`. A template
-/// without the placeholder gets the prompt appended as one extra argument.
+/// without the placeholder gets the prompt appended as one extra argument. The reserved `notify`
+/// command has no argv.
 /// ponytail: split on whitespace only, no shell quoting; shell-words parsing is the upgrade path.
 pub fn wake_argv(template: &str, prompt: &str) -> Vec<String> {
+    if is_notify(template) {
+        return Vec::new();
+    }
     let mut found = false;
     let mut argv: Vec<String> = template
         .split_whitespace()
@@ -100,6 +151,10 @@ pub struct Watch {
     pub command: String,
     pub channels: Vec<ChannelSummary>,
     own_names: Vec<String>,
+    /// `@host/folder` tail of this folder's agent names, sent as the coverage heartbeat.
+    suffix: String,
+    /// Shows the `notify` wake; replaced in tests.
+    pub notifier: Box<dyn Fn(&str) + Send + Sync>,
     /// Highest foreign message id the last spawn was for.
     pub last_woken_id: i64,
     pub last_spawn: Option<Instant>,
@@ -114,8 +169,12 @@ impl Watch {
         command: String,
         channels: Vec<ChannelSummary>,
     ) -> Self {
+        let named = agent_name("agent", Path::new(&folder));
+        let suffix = named["agent".len()..].to_string();
         Self {
             own_names: own_names(&folder),
+            suffix,
+            notifier: Box::new(os_notify),
             client,
             dir,
             folder,
@@ -142,9 +201,19 @@ impl Watch {
         }
     }
 
+    /// Reports that this daemon covers the folder's agents, for every bound channel.
+    async fn heartbeat(&self) {
+        let beats = self
+            .channels
+            .iter()
+            .map(|ch| self.client.report_coverage(ch.id, &self.suffix));
+        futures_util::future::join_all(beats).await;
+    }
+
     /// One evaluation: reap the child, read what is undelivered past the shared cursor, and
     /// spawn the wake command when `should_wake` allows it.
     pub async fn pass(&mut self) -> Result<(), Error> {
+        self.heartbeat().await;
         self.reap();
         // Order matters: `ah wait` advances the cursor before it drops its pidfile. Checking
         // liveness first and reading the cursor after means a dead listener's delivery is
@@ -155,19 +224,19 @@ impl Watch {
             return Ok(());
         }
         let cursors = Cursors::load_folder(&self.dir, &self.folder)?;
-        let mut newest: Option<(i64, String)> = None;
+        let mut newest: Option<(i64, String, String)> = None;
         for ch in &self.channels {
             // No cursor means the folder was never seeded; start at the tail seen at startup.
             let since = cursors.get(&ch.id).copied().unwrap_or(ch.last_message_id);
             for m in fetch_since(&self.client, ch.id, since).await? {
                 let is_own = self.own_names.contains(&m.sender_name);
-                let is_newer = newest.as_ref().is_none_or(|(id, _)| m.id > *id);
+                let is_newer = newest.as_ref().is_none_or(|(id, _, _)| m.id > *id);
                 if !is_own && is_newer {
-                    newest = Some((m.id, ch.name.clone()));
+                    newest = Some((m.id, ch.name.clone(), m.sender_name.clone()));
                 }
             }
         }
-        let (max_foreign_id, channel) = newest.unwrap_or((0, String::new()));
+        let (max_foreign_id, channel, sender) = newest.unwrap_or_default();
         let since_spawn = self.last_spawn.map_or(Duration::MAX, |t| t.elapsed());
         let allowed = should_wake(
             alive,
@@ -183,7 +252,7 @@ impl Watch {
         if has_session {
             return Ok(());
         }
-        self.spawn(max_foreign_id, &channel);
+        self.spawn(max_foreign_id, &channel, &sender);
         Ok(())
     }
 
@@ -208,10 +277,19 @@ impl Watch {
         false
     }
 
-    fn spawn(&mut self, message_id: i64, channel: &str) {
+    fn spawn(&mut self, message_id: i64, channel: &str, sender: &str) {
         // Recorded before the spawn so a command that fails to start is not retried in a loop.
         self.last_woken_id = message_id;
         self.last_spawn = Some(Instant::now());
+        if is_notify(&self.command) {
+            // Nothing is delivered, so no cursor moves: the human types, the stop hook delivers.
+            (self.notifier)(&format!("new message from {sender} in #{channel}"));
+            println!(
+                "notified {} for message {message_id} in #{channel}",
+                self.folder
+            );
+            return;
+        }
         let argv = wake_argv(&self.command, WAKE_PROMPT);
         let Some((program, args)) = argv.split_first() else {
             return;
@@ -441,6 +519,23 @@ mod tests {
         assert_eq!(harness_template("codex"), Some("codex exec {prompt}"));
         assert_eq!(harness_template("claude-code"), Some("claude -p {prompt}"));
         assert_eq!(harness_template("vim"), None);
+    }
+
+    #[test]
+    fn notify_is_reserved_and_has_no_argv() {
+        assert!(is_notify("notify"));
+        assert!(is_notify(" notify "));
+        assert!(!is_notify("notify-send"));
+        assert!(wake_argv("notify", "p").is_empty());
+        assert_eq!(wake_argv("notify-send", "p"), ["notify-send", "p"]);
+    }
+
+    #[test]
+    fn applescript_escapes_quotes_and_backslashes() {
+        assert_eq!(
+            applescript("a \"b\" \\ c\nd"),
+            "display notification \"a \\\"b\\\" \\\\ cd\" with title \"Agent Hub\""
+        );
     }
 
     const LONG: Duration = Duration::from_secs(31);

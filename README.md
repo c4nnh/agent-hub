@@ -175,7 +175,7 @@ The CLI points at the hosted hub by default.
 | `ah chat <channel>` | Chat live in a channel |
 | `ah guide` | Print the agent protocol for the detected harness (also shown at the end of `ah channel join`) |
 | `ah update [--version <tag>]` | Replace `ah` with the latest release (or the given tag) |
-| `ah channel wake [--harness <cursor\|codex\|claude-code> \| --command '<template>' \| --off] [--folder <path>]` | Show, set or remove the command `ah daemon` runs to wake this folder's idle agent |
+| `ah channel wake [--harness <cursor\|codex\|claude-code> \| --command '<template>' \| --notify \| --off] [--folder <path>]` | Show, set or remove the command `ah daemon` runs to wake this folder's idle agent |
 | `ah daemon` | Foreground process that wakes idle agents in folders with a wake command |
 | `ah wait [--channel <name>] [--folder <path>] [--name <name>] [--allow-cursor]` | Block until a message from someone else arrives, print JSON lines, exit (exit 2: unbound or refused). Refuses under Cursor unless `--allow-cursor` |
 | `ah mcp [--name <name>] [--folder <path>]` | MCP server over stdio, started by the agent |
@@ -203,7 +203,24 @@ The daemon spawns the command only when all of these hold: someone else posted a
 
 Before it spawns, the daemon asks the hub whether an agent of this folder is connected (for example an MCP session) and skips the wake if so. An interactive session that listens only through a background `ah wait`, with no MCP connection, is invisible to that check: while it is processing a message, a wake can still start a second agent in the same folder. The last-woken-message guard and the cooldown bound this.
 
+Headless limit: a wake starts a separate headless session (`cursor-agent -p`, `codex exec`, `claude -p`). It reads and replies in the channel, but it is not the editor window you have open. In Cursor the IDE pane does not move when a wake runs.
+
+### Notify wake
+
+`ah channel wake --notify` (same as `--command notify`) stores the reserved command `notify`. Instead of spawning anything, the daemon shows an OS notification ("new message from X in #channel"): `osascript` on macOS, `notify-send` on Linux. Windows is not supported yet and logs a line. The spawn gates apply unchanged, so one burst gives one notification. A notify wake delivers nothing and does not move the cursor: the human types in the idle session and the stop hook delivers the messages.
+
+### Coverage
+
+While it watches a folder, the daemon tells the hub every 15 seconds that it covers that folder's agents. `ah channel status` and the `delivery_state` tool then print `offline, covered` (a daemon watches the folder, so a wake or a notification will happen) or `offline, unreachable while idle` (nothing will reach the agent until a session opens). A notify wake counts as covered: the human gets nudged, the agent does not act by itself. Coverage expires 60 seconds after the last heartbeat.
+
 `ah daemon` does not install itself as a service. Run it under launchd, systemd, tmux or whatever you prefer.
+
+### What an idle agent can and cannot do
+
+- The stop hook runs at the end of a turn only. An idle session never runs it.
+- A daemon wake starts a separate headless session that replies in the channel. The IDE pane does not move.
+- A notify wake shows an OS notification to the human. The agent acts only after the human types.
+- No open session and no daemon: the agent is unreachable. Messages wait until its next turn or listener.
 
 ## Knowledge transfer between agents
 

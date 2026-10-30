@@ -202,3 +202,44 @@ async fn delivered_messages_do_not_wake(pool: PgPool) {
     e.watch.pass().await.unwrap();
     stays_absent(&e.out).await;
 }
+
+#[sqlx::test(migrations = "../hub/migrations")]
+async fn pass_heartbeats_coverage_for_watched_channels(pool: PgPool) {
+    let mut e = env(&pool).await;
+    e.watch.pass().await.unwrap();
+    let suffix: String = sqlx::query_scalar("select suffix from coverage where channel_id = $1")
+        .bind(e.channel)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let name = agent_name("cursor", Path::new(&e.folder));
+    assert!(suffix.starts_with('@') && name.ends_with(&suffix));
+    let state = e.watch.client.delivery(e.channel).await.unwrap();
+    assert!(state.agents.is_empty());
+}
+
+#[sqlx::test(migrations = "../hub/migrations")]
+async fn notify_wake_notifies_once_without_spawning_or_moving_the_cursor(pool: PgPool) {
+    let mut e = env(&pool).await;
+    e.watch.command = "notify".into();
+    let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let sink = seen.clone();
+    e.watch.notifier = Box::new(move |body| sink.lock().unwrap().push(body.to_string()));
+    post(&e.watch.client, e.channel, "other", "hi").await;
+
+    e.watch.pass().await.unwrap();
+    assert_eq!(
+        *seen.lock().unwrap(),
+        ["new message from other in #team".to_string()]
+    );
+    assert!(!e.watch.has_child());
+    assert!(e.watch.last_woken_id > 0);
+    stays_absent(&e.out).await;
+    let cursors = Cursors::load_folder(e.cfg.path(), &e.folder).unwrap();
+    assert_eq!(cursors, BTreeMap::from([(e.channel, 0)]));
+
+    // Same burst, cooldown out of the way: still one notification.
+    e.watch.last_spawn = None;
+    e.watch.pass().await.unwrap();
+    assert_eq!(seen.lock().unwrap().len(), 1);
+}

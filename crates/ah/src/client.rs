@@ -186,6 +186,21 @@ impl HubClient {
         drop(sent);
     }
 
+    /// Daemon heartbeat: tells the hub this host covers agents ending in `suffix`. Best effort
+    /// like `report_agent_cursor`: errors and the 2s timeout are dropped.
+    pub async fn report_coverage(&self, channel: Uuid, suffix: &str) {
+        let sent = self
+            .request(
+                reqwest::Method::PUT,
+                &format!("/api/channels/{channel}/coverage"),
+            )
+            .timeout(std::time::Duration::from_secs(2))
+            .json(&serde_json::json!({ "suffix": suffix }))
+            .send()
+            .await;
+        drop(sent);
+    }
+
     /// `report_agent_cursor` for every channel, concurrently.
     pub async fn report_agent_cursors(
         &self,

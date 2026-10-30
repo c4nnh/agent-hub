@@ -31,6 +31,7 @@ fn wake(
         harness: harness.map(Into::into),
         command: command.map(Into::into),
         off,
+        notify: false,
     };
     let mut out = Vec::new();
     run_wake(cfg.path(), std::path::Path::new("/"), args, &mut out).map_err(|e| e.to_string())?;
@@ -93,4 +94,22 @@ fn empty_command_is_rejected() {
     let (cfg, folder) = bound();
     assert!(wake(&cfg, &folder, None, Some("   "), false).is_err());
     assert_eq!(stored(&cfg, &folder), None);
+}
+
+#[test]
+fn notify_flag_stores_the_reserved_command() {
+    let (cfg, folder) = bound();
+    let args = |notify, command: Option<&str>| WakeArgs {
+        folder: Some(folder.path().to_path_buf()),
+        harness: None,
+        command: command.map(Into::into),
+        off: false,
+        notify,
+    };
+    let run = |a| run_wake(cfg.path(), std::path::Path::new("/"), a, &mut Vec::new());
+    run(args(true, None)).unwrap();
+    assert_eq!(stored(&cfg, &folder).as_deref(), Some("notify"));
+    run(args(false, Some("echo {prompt}"))).unwrap();
+    run(args(false, Some("notify"))).unwrap();
+    assert_eq!(stored(&cfg, &folder).as_deref(), Some("notify"));
 }
