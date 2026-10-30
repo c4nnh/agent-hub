@@ -243,3 +243,42 @@ async fn notify_wake_notifies_once_without_spawning_or_moving_the_cursor(pool: P
     e.watch.pass().await.unwrap();
     assert_eq!(seen.lock().unwrap().len(), 1);
 }
+
+#[sqlx::test(migrations = "../hub/migrations")]
+async fn notify_fires_even_with_a_connected_session(pool: PgPool) {
+    use futures_util::SinkExt;
+    let mut e = env(&pool).await;
+    e.watch.command = "notify".into();
+    let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let sink = seen.clone();
+    e.watch.notifier = Box::new(move |body| sink.lock().unwrap().push(body.to_string()));
+
+    let name = agent_name("cursor", Path::new(&e.folder));
+    let hello = ah_common::ClientHello {
+        agent_name: Some(name.clone()),
+        sender_type: SenderType::Agent,
+        folder: Some(e.folder.clone()),
+        channels: vec![e.channel],
+    };
+    let (mut ws, _) = tokio_tungstenite::connect_async(e.watch.client.ws_url().unwrap())
+        .await
+        .unwrap();
+    ws.send(tokio_tungstenite::tungstenite::Message::text(
+        serde_json::to_string(&hello).unwrap(),
+    ))
+    .await
+    .unwrap();
+    for _ in 0..100 {
+        let agents = e.watch.client.list_agents(e.channel).await.unwrap();
+        if agents.iter().any(|a| a.name == name) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    post(&e.watch.client, e.channel, "other", "hi").await;
+    e.watch.pass().await.unwrap();
+    assert_eq!(seen.lock().unwrap().len(), 1);
+    let cursors = Cursors::load_folder(e.cfg.path(), &e.folder).unwrap();
+    assert_eq!(cursors, BTreeMap::from([(e.channel, 0)]));
+}

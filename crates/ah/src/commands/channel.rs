@@ -353,6 +353,9 @@ pub fn run_wake(dir: &Path, cwd: &Path, args: WakeArgs, out: &mut impl Write) ->
     } else {
         args.command.clone()
     };
+    if cfg!(not(unix)) && command.as_deref().is_some_and(super::daemon::is_notify) {
+        return Err("notify wake is not supported on this platform yet".into());
+    }
     let new = match (&args.harness, &command, args.off) {
         (Some(h), None, false) => {
             let t = harness_template(h).ok_or_else(|| format!("unknown harness '{h}'"))?;

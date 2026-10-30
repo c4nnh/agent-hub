@@ -207,11 +207,11 @@ Headless limit: a wake starts a separate headless session (`cursor-agent -p`, `c
 
 ### Notify wake
 
-`ah channel wake --notify` (same as `--command notify`) stores the reserved command `notify`. Instead of spawning anything, the daemon shows an OS notification ("new message from X in #channel"): `osascript` on macOS, `notify-send` on Linux. Windows is not supported yet and logs a line. The spawn gates apply unchanged, so one burst gives one notification. A notify wake delivers nothing and does not move the cursor: the human types in the idle session and the stop hook delivers the messages.
+`ah channel wake --notify` (same as `--command notify`) stores the reserved command `notify`. Instead of spawning anything, the daemon shows an OS notification ("new message from X in #channel"): `osascript` on macOS, `notify-send` on Linux. Windows is not supported yet: `ah channel wake --notify` refuses there. On Linux without `notify-send` on PATH, the daemon logs a warning at start and does not report coverage for that folder until it is restarted with `notify-send` installed. The notifier process is killed after 5 seconds. The spawn gates apply unchanged, so one burst gives one notification. A notify wake delivers nothing and does not move the cursor: the human types in the idle session and the stop hook delivers the messages.
 
 ### Coverage
 
-While it watches a folder, the daemon tells the hub every 15 seconds that it covers that folder's agents. `ah channel status` and the `delivery_state` tool then print `offline, covered` (a daemon watches the folder, so a wake or a notification will happen) or `offline, unreachable while idle` (nothing will reach the agent until a session opens). A notify wake counts as covered: the human gets nudged, the agent does not act by itself. Coverage expires 60 seconds after the last heartbeat.
+While it watches a folder, the daemon tells the hub every 15 seconds that it covers that folder's agents. `ah channel status` and the `delivery_state` tool then print `offline, covered` (a daemon watches the folder and can wake the agent or notify its human) or `offline, unreachable while idle` (nothing will reach the agent until a session opens). A notify wake counts as covered when the notifier works: the human gets nudged, the agent does not act by itself. The notification fires even while an MCP session is connected, because an idle IDE keeps its connection. Coverage expires 60 seconds after the last heartbeat.
 
 `ah daemon` does not install itself as a service. Run it under launchd, systemd, tmux or whatever you prefer.
 

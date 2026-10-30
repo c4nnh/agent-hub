@@ -64,26 +64,68 @@ pub fn applescript(body: &str) -> String {
     format!("display notification \"{safe}\" with title \"Agent Hub\"")
 }
 
-/// Shows an OS notification. Failures are logged, never fatal.
-/// ponytail: blocks for the notifier process (~100ms); Windows has no notifier, a toast is the upgrade path.
+/// Time a notifier process gets before it is killed.
+const NOTIFY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Whether `program` is an executable file in one of the `path` directories.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn on_path(program: &str, path: &std::ffi::OsStr) -> bool {
+    std::env::split_paths(path).any(|d| d.join(program).is_file())
+}
+
+/// Whether `os_notify` can show anything here. macOS ships `osascript`; Linux needs `notify-send`.
+fn notify_available() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        std::env::var_os("PATH").is_some_and(|p| on_path("notify-send", &p))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        true
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        false
+    }
+}
+
+/// Shows an OS notification without blocking the caller: the notifier process is reaped on a
+/// thread and killed after `NOTIFY_TIMEOUT` (a D-Bus-less `notify-send` can hang). Failures are
+/// logged, never fatal.
+/// ponytail: Windows has no notifier, a toast is the upgrade path.
 pub fn os_notify(body: &str) {
     #[cfg(target_os = "macos")]
-    let result = Command::new("osascript")
+    let spawned = Command::new("osascript")
         .arg("-e")
         .arg(applescript(body))
-        .status();
+        .spawn();
     #[cfg(all(unix, not(target_os = "macos")))]
-    let result = Command::new("notify-send")
+    let spawned = Command::new("notify-send")
         .arg("Agent Hub")
         .arg(body)
-        .status();
+        .spawn();
     #[cfg(not(unix))]
-    let result: std::io::Result<std::process::ExitStatus> = {
+    let spawned: std::io::Result<Child> = {
+        let _ = body;
         tracing::warn!("notify wake is not supported on this platform");
         return;
     };
-    if let Err(error) = result {
-        tracing::warn!(%error, "could not show notification");
+    match spawned {
+        Ok(mut child) => {
+            std::thread::spawn(move || {
+                let started = Instant::now();
+                while started.elapsed() < NOTIFY_TIMEOUT {
+                    if !matches!(child.try_wait(), Ok(None)) {
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                tracing::warn!("notifier timed out, killing it");
+                drop(child.kill());
+                drop(child.wait());
+            });
+        }
+        Err(error) => tracing::warn!(%error, "could not show notification"),
     }
 }
 
@@ -153,6 +195,8 @@ pub struct Watch {
     own_names: Vec<String>,
     /// `@host/folder` tail of this folder's agent names, sent as the coverage heartbeat.
     suffix: String,
+    /// Whether to heartbeat coverage; off when the notify wake cannot show anything here.
+    pub heartbeat: bool,
     /// Shows the `notify` wake; replaced in tests.
     pub notifier: Box<dyn Fn(&str) + Send + Sync>,
     /// Highest foreign message id the last spawn was for.
@@ -171,9 +215,14 @@ impl Watch {
     ) -> Self {
         let named = agent_name("agent", Path::new(&folder));
         let suffix = named["agent".len()..].to_string();
+        let heartbeat = !is_notify(&command) || notify_available();
+        if !heartbeat {
+            tracing::warn!(%folder, "notify wake has no notifier on this system; not reporting coverage");
+        }
         Self {
             own_names: own_names(&folder),
             suffix,
+            heartbeat,
             notifier: Box::new(os_notify),
             client,
             dir,
@@ -203,6 +252,9 @@ impl Watch {
 
     /// Reports that this daemon covers the folder's agents, for every bound channel.
     async fn heartbeat(&self) {
+        if !self.heartbeat {
+            return;
+        }
         let beats = self
             .channels
             .iter()
@@ -248,7 +300,9 @@ impl Watch {
         if !allowed {
             return Ok(());
         }
-        let has_session = self.own_agent_online().await;
+        // A notification starts nothing, so an open session does not make it redundant: an idle
+        // IDE keeps its MCP connection while its pane sits still.
+        let has_session = !is_notify(&self.command) && self.own_agent_online().await;
         if has_session {
             return Ok(());
         }
@@ -528,6 +582,15 @@ mod tests {
         assert!(!is_notify("notify-send"));
         assert!(wake_argv("notify", "p").is_empty());
         assert_eq!(wake_argv("notify-send", "p"), ["notify-send", "p"]);
+    }
+
+    #[test]
+    fn on_path_finds_files_in_listed_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("notify-send"), "").unwrap();
+        let path = std::env::join_paths([Path::new("/nonexistent"), dir.path()]).unwrap();
+        assert!(on_path("notify-send", &path));
+        assert!(!on_path("other", &path));
     }
 
     #[test]
