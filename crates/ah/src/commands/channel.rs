@@ -69,6 +69,7 @@ pub async fn run_join(
     cwd: &Path,
     channel: Option<&str>,
     hooks: &crate::hooks::HookDirs,
+    harness: super::guide::Harness,
     out: &mut impl Write,
 ) -> Res {
     let ch = pick_channel(client, channel).await?;
@@ -113,6 +114,8 @@ pub async fn run_join(
             a.connected_at.to_rfc3339()
         )?;
     }
+    writeln!(out)?;
+    super::guide::run_guide(harness, out)?;
     Ok(())
 }
 

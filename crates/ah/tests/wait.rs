@@ -311,6 +311,7 @@ async fn message_after_join_before_first_wait_is_delivered(pool: PgPool) {
         e.folder.path(),
         Some("team"),
         &ah::hooks::HookDirs::default(),
+        ah::commands::guide::Harness::Unknown,
         &mut Vec::new(),
     )
     .await

@@ -1,6 +1,6 @@
 use ah::{
     client::HubClient,
-    commands::{auth, channel, chat, daemon, update, wait},
+    commands::{auth, channel, chat, daemon, guide, update, wait},
     config::{self, Credentials},
     hooks,
 };
@@ -48,6 +48,8 @@ enum Command {
         #[arg(long)]
         folder: Option<std::path::PathBuf>,
     },
+    /// Print the agent protocol: how to stay reachable and answer in real time
+    Guide,
     /// Update ah to the latest release
     Update {
         /// Install this release tag (e.g. v0.1.2) instead of the latest
@@ -261,6 +263,7 @@ async fn run(cli: Cli, dir: &std::path::Path) -> Result<(), Box<dyn std::error::
                 .await
                 .map_err(|e| e as Box<dyn std::error::Error>)
         }
+        Command::Guide => Ok(guide::run_guide(guide::Harness::detect(), &mut out)?),
         Command::Hook { .. } | Command::Hooks { .. } => Ok(()),
         Command::Daemon => {
             let creds = Credentials::load(dir)?.ok_or("not logged in; run `ah auth login`")?;
@@ -309,8 +312,16 @@ async fn run(cli: Cli, dir: &std::path::Path) -> Result<(), Box<dyn std::error::
                 }
                 ChannelCommand::Join { channel } => {
                     let targets = hooks::HookDirs::detect();
-                    channel::run_join(dir, &client, &cwd, channel.as_deref(), &targets, &mut out)
-                        .await
+                    channel::run_join(
+                        dir,
+                        &client,
+                        &cwd,
+                        channel.as_deref(),
+                        &targets,
+                        guide::Harness::detect(),
+                        &mut out,
+                    )
+                    .await
                 }
                 ChannelCommand::Leave {
                     channel,

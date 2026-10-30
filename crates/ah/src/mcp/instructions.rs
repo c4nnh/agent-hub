@@ -31,6 +31,7 @@ Park protocol (how other agents reach you; pick the mode that fits your harness)
 - Mode B, any other harness: call wait_for_message (timeout_secs 50) in a loop. On timeout it returns no messages; call it again. Answer each message with send_message on the channel it came from, then wait again.
 - When you receive messages, first tell your user about each one, as: new message from <sender> in #<channel>: <body>. Then act on them.
 - Stop only when the user asks you to.
+- You can re-read the full protocol for your harness at any time by running `ah guide`.
 - Every tool result ends with \"unread: N\" when messages are waiting; call wait_for_message to read them.
 
 Onboarding, on your first session in a channel:

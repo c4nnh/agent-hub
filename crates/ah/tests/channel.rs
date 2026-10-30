@@ -72,6 +72,7 @@ async fn create_join_binds_cwd(pool: PgPool) {
             cwd.path(),
             Some("team"),
             &ah::hooks::HookDirs::default(),
+            ah::commands::guide::Harness::Unknown,
             &mut out,
         )
         .await
@@ -139,6 +140,7 @@ async fn leave_unbinds(pool: PgPool) {
             f.path(),
             Some(ch),
             &ah::hooks::HookDirs::default(),
+            ah::commands::guide::Harness::Unknown,
             &mut out,
         )
         .await
@@ -210,6 +212,7 @@ async fn leave_account_removes_membership(pool: PgPool) {
         f1.path(),
         Some("team"),
         &ah::hooks::HookDirs::default(),
+        ah::commands::guide::Harness::Unknown,
         &mut out,
     )
     .await
@@ -220,6 +223,7 @@ async fn leave_account_removes_membership(pool: PgPool) {
         f1.path(),
         Some("other"),
         &ah::hooks::HookDirs::default(),
+        ah::commands::guide::Harness::Unknown,
         &mut out,
     )
     .await
@@ -230,6 +234,7 @@ async fn leave_account_removes_membership(pool: PgPool) {
         f2.path(),
         Some("team"),
         &ah::hooks::HookDirs::default(),
+        ah::commands::guide::Harness::Unknown,
         &mut out,
     )
     .await
@@ -262,6 +267,7 @@ async fn leave_account_removes_membership(pool: PgPool) {
         f1.path(),
         Some("team"),
         &ah::hooks::HookDirs::default(),
+        ah::commands::guide::Harness::Unknown,
         &mut out,
     )
     .await
@@ -292,6 +298,7 @@ async fn config_adds_extra_folder(pool: PgPool) {
         cwd.path(),
         Some("team"),
         &ah::hooks::HookDirs::default(),
+        ah::commands::guide::Harness::Unknown,
         &mut out,
     )
     .await
@@ -388,6 +395,7 @@ async fn config_folder_refuses_overwrite(pool: PgPool) {
         a.path(),
         Some("team"),
         &ah::hooks::HookDirs::default(),
+        ah::commands::guide::Harness::Unknown,
         &mut out,
     )
     .await
@@ -398,6 +406,7 @@ async fn config_folder_refuses_overwrite(pool: PgPool) {
         b.path(),
         Some("other"),
         &ah::hooks::HookDirs::default(),
+        ah::commands::guide::Harness::Unknown,
         &mut out,
     )
     .await
@@ -439,6 +448,7 @@ async fn join_seeds_cursor_once(pool: PgPool) {
         cwd.path(),
         Some("team"),
         &ah::hooks::HookDirs::default(),
+        ah::commands::guide::Harness::Unknown,
         &mut Vec::new(),
     )
     .await
@@ -454,6 +464,7 @@ async fn join_seeds_cursor_once(pool: PgPool) {
         cwd.path(),
         Some("team"),
         &ah::hooks::HookDirs::default(),
+        ah::commands::guide::Harness::Unknown,
         &mut Vec::new(),
     )
     .await
@@ -483,6 +494,7 @@ async fn join_installs_claude_code_hooks(pool: PgPool) {
             claude: Some(claude.clone()),
             cursor: None,
         },
+        ah::commands::guide::Harness::Unknown,
         &mut out,
     )
     .await
@@ -502,6 +514,7 @@ async fn join_installs_claude_code_hooks(pool: PgPool) {
             claude: Some(claude.clone()),
             cursor: None,
         },
+        ah::commands::guide::Harness::Unknown,
         &mut out,
     )
     .await
@@ -523,9 +536,17 @@ async fn join_reports_reachability_per_harness(pool: PgPool) {
         let (dir, cwd, c) = (dir.path().to_path_buf(), cwd.path().to_path_buf(), &c);
         async move {
             let mut out = Vec::new();
-            run_join(&dir, c, &cwd, Some("team"), &dirs, &mut out)
-                .await
-                .unwrap();
+            run_join(
+                &dir,
+                c,
+                &cwd,
+                Some("team"),
+                &dirs,
+                ah::commands::guide::Harness::Unknown,
+                &mut out,
+            )
+            .await
+            .unwrap();
             text(out)
         }
     };
@@ -563,4 +584,47 @@ async fn join_reports_reachability_per_harness(pool: PgPool) {
     // AH_NO_HOOKS=1: nothing applies, the rule again.
     let out = join(HookDirs::detect_in(home.path(), true, true)).await;
     assert!(out.contains("no editor hooks installed"), "{out}");
+}
+
+#[sqlx::test(migrations = "../hub/migrations")]
+async fn join_prints_harness_protocol(pool: PgPool) {
+    use ah::commands::guide::{Harness, guide_text};
+    let hub = spawn_hub(pool.clone()).await;
+    let c = client(&pool, &hub, "a@b.co").await;
+    c.create_channel("team").await.unwrap();
+
+    for (harness, first_step) in [
+        (
+            Harness::ClaudeCode,
+            "start `ah wait` as a background Bash command",
+        ),
+        (
+            Harness::Cursor,
+            "injected automatically at the end of each of your turns",
+        ),
+        (Harness::Unknown, "loop the wait_for_message MCP tool"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = tempfile::tempdir().unwrap();
+        let mut out = Vec::new();
+        run_join(
+            dir.path(),
+            &c,
+            cwd.path(),
+            Some("team"),
+            &ah::hooks::HookDirs::default(),
+            harness,
+            &mut out,
+        )
+        .await
+        .unwrap();
+        let out = text(out);
+        assert!(out.contains("AGENT PROTOCOL"), "{out}");
+        assert!(out.contains(first_step), "{out}");
+        // Report lines first, then one blank line, then the shared block at the very end.
+        assert!(
+            out.ends_with(&format!("\n\n{}\n", guide_text(harness))),
+            "{out}"
+        );
+    }
 }
