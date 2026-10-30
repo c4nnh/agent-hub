@@ -921,6 +921,7 @@ pub async fn run_cursor_stop(
     // than losing the messages.
     if !cursors.is_empty() {
         Cursors::advance(dir, &key, &cursors)?;
+        client.report_agent_cursors(&own[0], &cursors).await;
     }
     Ok(())
 }

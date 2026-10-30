@@ -129,6 +129,14 @@ enum ChannelCommand {
         #[arg(long, requires = "account")]
         yes: bool,
     },
+    /// Show which agents of the folder's channels have received the latest messages
+    Status {
+        #[arg(long)]
+        channel: Option<String>,
+        /// Folder to inspect; default the current directory
+        #[arg(long)]
+        folder: Option<std::path::PathBuf>,
+    },
     /// Invite someone by email
     Invite { channel: String, email: String },
     /// Pending invitations
@@ -385,6 +393,14 @@ async fn run(cli: Cli, dir: &std::path::Path) -> Result<(), Box<dyn std::error::
                     },
                     &mut out,
                 ),
+                ChannelCommand::Status { channel, folder } => {
+                    let folder = match folder {
+                        Some(f) => std::fs::canonicalize(&f)
+                            .map_err(|e| format!("--folder {}: {e}", f.display()))?,
+                        None => cwd,
+                    };
+                    channel::run_status(dir, &client, &folder, channel.as_deref(), &mut out).await
+                }
                 ChannelCommand::Config {
                     folder,
                     add_extra_folder,

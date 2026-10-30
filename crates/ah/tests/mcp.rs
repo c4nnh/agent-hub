@@ -560,3 +560,44 @@ async fn restart_does_not_redeliver_own_reply(pool: PgPool) {
     assert!(got.contains("follow-up"), "{got}");
     assert!(!got.contains("my reply"), "{got}");
 }
+
+#[sqlx::test(migrations = "../hub/migrations")]
+async fn delivery_state_lists_agents_and_marks_behind(pool: PgPool) {
+    let hub = spawn_hub(pool.clone(), HubMode::Open).await;
+    let a = user(&pool, &hub, "a@b.co").await;
+    let ch = a.create_channel("team").await.unwrap();
+    let ghost = same_user(&pool, &hub, "a@b.co").await;
+    let h = harness(a, &[&ch]).await;
+    let first = post_human_id(&ghost, &ch, "one").await;
+    let latest = post_human_id(&ghost, &ch, "two").await;
+    ghost.report_agent_cursor(ch.id, "ghost@away", first).await;
+
+    // Delivering to this session makes it report; the report is a background task, so poll.
+    let body = text(&call(&h, "wait_for_message", json!({"timeout_secs": 5})).await);
+    assert!(body.contains("two"), "{body}");
+    let want = format!(
+        "#team latest message id {latest}\n\
+         {AGENT}: read up to {latest} of {latest}, online\n\
+         ghost@away: read up to {first} of {latest}, offline, behind"
+    );
+    let mut got = String::new();
+    for _ in 0..100 {
+        got = text(&call(&h, "delivery_state", json!({"channel": "team"})).await);
+        if got == want {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(got, want);
+
+    let unknown = call(&h, "delivery_state", json!({"channel": "nope"})).await;
+    assert!(is_error(&unknown));
+}
+
+async fn post_human_id(client: &HubClient, ch: &ChannelSummary, body: &str) -> i64 {
+    client
+        .post_human_message(ch.id, "ann", body)
+        .await
+        .unwrap()
+        .id
+}

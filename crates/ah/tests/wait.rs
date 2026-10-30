@@ -430,3 +430,21 @@ async fn cursor_stop_skips_dropped_followups_and_caps_size(pool: PgPool) {
     assert!(!msg.contains("more pending"), "{msg}");
     assert_eq!(cursor(), ids[24]);
 }
+
+#[sqlx::test(migrations = "../hub/migrations")]
+async fn wait_reports_delivered_cursor_to_hub(pool: PgPool) {
+    let e = env(&pool).await;
+    let poster = async {
+        cursor_saved(e.cfg.path()).await;
+        post(&e.c, e.channel, "other", "one").await;
+        post(&e.c, e.channel, "other", "two").await;
+    };
+    let (got, ()) = tokio::join!(wait_once_with(&e, Some(Duration::from_millis(500))), poster);
+    let max_id = got.unwrap().iter().map(|m| m["id"].as_i64().unwrap()).max();
+    let max_id = max_id.expect("a message was printed");
+    let state = e.c.delivery(e.channel).await.unwrap();
+    assert_eq!(state.agents.len(), 1, "{state:?}");
+    assert_eq!(state.agents[0].agent_name, ME);
+    assert_eq!(state.agents[0].last_read_id, max_id);
+    assert_eq!(state.last_message_id, max_id);
+}

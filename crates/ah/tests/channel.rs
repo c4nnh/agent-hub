@@ -3,7 +3,7 @@ use ah::{
     client::HubClient,
     commands::channel::{
         ConfigArgs, run_config, run_create, run_invitation, run_invite, run_join, run_leave,
-        run_leave_account,
+        run_leave_account, run_status,
     },
     cursors::Cursors,
 };
@@ -627,4 +627,56 @@ async fn join_prints_harness_protocol(pool: PgPool) {
             "{out}"
         );
     }
+}
+
+#[sqlx::test(migrations = "../hub/migrations")]
+async fn status_prints_delivery_per_bound_channel(pool: PgPool) {
+    let hub = spawn_hub(pool.clone()).await;
+    let c = client(&pool, &hub, "a@b.co").await;
+    let dir = tempfile::tempdir().unwrap();
+    let folder = tempfile::tempdir().unwrap();
+    let ch = c.create_channel("team").await.unwrap();
+    let other = c.create_channel("other").await.unwrap();
+    let mut bindings = Bindings::default();
+    bindings.0.insert(
+        Bindings::key(folder.path()).unwrap(),
+        ah::bindings::Binding {
+            channel_ids: vec![ch.id],
+            ..Default::default()
+        },
+    );
+    bindings.save(dir.path()).unwrap();
+    c.post_human_message(ch.id, "ann", "hi").await.unwrap();
+    let latest = c
+        .post_human_message(ch.id, "ann", "again")
+        .await
+        .unwrap()
+        .id;
+    c.report_agent_cursor(ch.id, "caught-up", latest).await;
+    c.report_agent_cursor(ch.id, "laggard", latest - 1).await;
+
+    let mut out = Vec::new();
+    run_status(dir.path(), &c, folder.path(), None, &mut out)
+        .await
+        .unwrap();
+    assert_eq!(
+        text(out),
+        format!(
+            "#team latest message id {latest}\n\
+             caught-up: read up to {latest} of {latest}, offline\n\
+             laggard: read up to {} of {latest}, offline, behind\n",
+            latest - 1
+        )
+    );
+
+    // Only bound channels are accepted by name.
+    let refused = run_status(
+        dir.path(),
+        &c,
+        folder.path(),
+        Some(&other.name),
+        &mut Vec::new(),
+    )
+    .await;
+    assert!(refused.is_err());
 }

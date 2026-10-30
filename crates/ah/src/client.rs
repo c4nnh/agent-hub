@@ -1,6 +1,6 @@
 use ah_common::{
     AgentPresence, AuthPollResponse, ChannelSummary, ContextEntry, ContextEntrySummary, ContextHit,
-    InvitationSummary, MeResponse, Message, PostMessage, SenderType, UpsertContext,
+    DeliveryState, InvitationSummary, MeResponse, Message, PostMessage, SenderType, UpsertContext,
 };
 use reqwest::{Response, StatusCode};
 use uuid::Uuid;
@@ -13,6 +13,7 @@ pub enum ClientError {
     Transport(#[from] reqwest::Error),
 }
 
+#[derive(Clone)]
 pub struct HubClient {
     hub_url: String,
     token: Option<String>,
@@ -159,6 +160,44 @@ impl HubClient {
 }
 
 impl HubClient {
+    pub async fn delivery(&self, id: Uuid) -> Result<DeliveryState, ClientError> {
+        let res = self
+            .request(
+                reqwest::Method::GET,
+                &format!("/api/channels/{id}/delivery"),
+            )
+            .send()
+            .await?;
+        Ok(Self::check(res).await?.json().await?)
+    }
+
+    /// Tells the hub how far this agent's client has delivered. Best effort: a slow or failing
+    /// hub must never hold up delivery, so errors and the 2s timeout are dropped.
+    pub async fn report_agent_cursor(&self, channel: Uuid, agent_name: &str, last_read_id: i64) {
+        let sent = self
+            .request(
+                reqwest::Method::PUT,
+                &format!("/api/channels/{channel}/agent-cursor"),
+            )
+            .timeout(std::time::Duration::from_secs(2))
+            .json(&serde_json::json!({ "agent_name": agent_name, "last_read_id": last_read_id }))
+            .send()
+            .await;
+        drop(sent);
+    }
+
+    /// `report_agent_cursor` for every channel, concurrently.
+    pub async fn report_agent_cursors(
+        &self,
+        agent_name: &str,
+        cursors: &std::collections::BTreeMap<Uuid, i64>,
+    ) {
+        let reports = cursors
+            .iter()
+            .map(|(id, cursor)| self.report_agent_cursor(*id, agent_name, *cursor));
+        futures_util::future::join_all(reports).await;
+    }
+
     /// `ws(s)://` URL for the hub's websocket endpoint, with the token as query parameter.
     pub fn ws_url(&self) -> Result<String, ClientError> {
         let mut url =

@@ -4,7 +4,7 @@ use crate::{
     commands::daemon::harness_template,
     cursors::Cursors,
 };
-use ah_common::ChannelSummary;
+use ah_common::{ChannelSummary, DeliveryState};
 use dialoguer::{Confirm, Select};
 use std::{
     io::Write,
@@ -370,5 +370,55 @@ pub fn run_wake(dir: &Path, cwd: &Path, args: WakeArgs, out: &mut impl Write) ->
     };
     bindings.save(dir)?;
     writeln!(out, "{msg}")?;
+    Ok(())
+}
+
+/// Delivery lines for one channel: a header, then one line per agent that reported or is online.
+/// An agent whose reported cursor trails the channel is marked behind.
+pub fn format_delivery(channel: &str, state: &DeliveryState) -> String {
+    let mut text = format!("#{channel} latest message id {}", state.last_message_id);
+    for a in &state.agents {
+        let presence = if a.online { "online" } else { "offline" };
+        let behind = if a.last_read_id < state.last_message_id {
+            ", behind"
+        } else {
+            ""
+        };
+        text.push_str(&format!(
+            "\n{}: read up to {} of {}, {presence}{behind}",
+            a.agent_name, a.last_read_id, state.last_message_id
+        ));
+    }
+    text
+}
+
+/// `ah channel status`: delivery state of one channel, or of every channel bound to the folder.
+pub async fn run_status(
+    dir: &Path,
+    client: &HubClient,
+    folder: &Path,
+    channel: Option<&str>,
+    out: &mut impl Write,
+) -> Res {
+    let bindings = Bindings::load(dir)?;
+    let bound = bindings.for_folder(folder).cloned().unwrap_or_default();
+    let all = client.list_channels().await?;
+    let mut channels: Vec<ChannelSummary> = all
+        .into_iter()
+        .filter(|c| bound.channel_ids.contains(&c.id))
+        .collect();
+    if let Some(name) = channel {
+        channels.retain(|c| c.name == name);
+        if channels.is_empty() {
+            return Err(format!("channel {name} is not bound to this folder").into());
+        }
+    }
+    if channels.is_empty() {
+        return Err(crate::mcp::UNBOUND.into());
+    }
+    for ch in channels {
+        let state = client.delivery(ch.id).await?;
+        writeln!(out, "{}", format_delivery(&ch.name, &state))?;
+    }
     Ok(())
 }

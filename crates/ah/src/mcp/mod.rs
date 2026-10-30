@@ -166,11 +166,26 @@ impl Session {
     /// Saves the cursor past our own posts, so a restarted session does not announce them back.
     /// ponytail: a failed write leaves one noisy self-announce after a restart; no retry.
     fn persist_idle(&self, snapshot: Option<BTreeMap<Uuid, i64>>) {
-        if let Some(snapshot) = snapshot
-            && let Err(error) = Cursors::advance(&self.dir, &self.folder, &snapshot)
-        {
-            tracing::warn!(%error, "could not save cursors; own posts may be announced after a restart");
+        let Some(snapshot) = snapshot else {
+            return;
+        };
+        match Cursors::advance(&self.dir, &self.folder, &snapshot) {
+            Ok(()) => self.report(snapshot),
+            Err(error) => {
+                tracing::warn!(%error, "could not save cursors; own posts may be announced after a restart");
+            }
         }
+    }
+
+    /// Reports the saved cursors to the hub in the background; delivery never waits on it.
+    /// A no-op outside a tokio runtime.
+    fn report(&self, cursors: BTreeMap<Uuid, i64>) {
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let client = self.client.clone();
+        let agent_name = self.agent_name.clone();
+        handle.spawn(async move { client.report_agent_cursors(&agent_name, &cursors).await });
     }
 
     /// Marks the feed as dead and wakes a parked wait so it can report `reason`.
@@ -193,10 +208,11 @@ impl Session {
                 inbox.cursors.iter().map(|(k, v)| (*k, *v)).collect();
             (drained, inbox.feed_stopped.is_some(), snapshot)
         };
-        if !drained.is_empty()
-            && let Err(error) = Cursors::advance(&self.dir, &self.folder, &snapshot)
-        {
-            tracing::warn!(%error, "could not save cursors; messages may repeat");
+        if !drained.is_empty() {
+            match Cursors::advance(&self.dir, &self.folder, &snapshot) {
+                Ok(()) => self.report(snapshot),
+                Err(error) => tracing::warn!(%error, "could not save cursors; messages may repeat"),
+            }
         }
         (drained, is_stopped)
     }

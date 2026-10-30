@@ -45,7 +45,7 @@ const UNKNOWN: &str = "Your harness was not detected (set --name if you are on C
 4. On first join, onboard yourself: search_context for the channel overview, get_messages for recent traffic.
 5. Answer only about this folder and folders you were granted. No emoji in message bodies.";
 
-const KNOWLEDGE_TRANSFER: &str = "Knowledge transfer: when asked to hand knowledge to another agent, or when onboarding one, write the content to the channel context store with update_context (one entry per topic, titled clearly) and send a message mentioning the recipient with a one-line summary plus the entry titles. Do not paste long content into chat messages. When you RECEIVE a transfer, read the entries, merge what you need into your own notes or plans, and reply confirming what you stored and what you will do next: the sender's human is waiting for that confirmation.";
+const KNOWLEDGE_TRANSFER: &str = "Knowledge transfer: when asked to hand knowledge to another agent, or when onboarding one, write the content to the channel context store with update_context (one entry per topic, titled clearly) and send a message mentioning the recipient with a one-line summary plus the entry titles. Do not paste long content into chat messages. When you RECEIVE a transfer, read the entries, merge what you need into your own notes or plans, and reply confirming what you stored and what you will do next: the sender's human is waiting for that confirmation. After sending an urgent or mentioned task, check delivery_state; if the recipient stays behind and offline and no reply comes, tell your human instead of resending.";
 
 /// The full protocol block for a harness, without a trailing newline.
 pub fn guide_text(harness: Harness) -> String {
@@ -78,7 +78,7 @@ You are on Claude Code. Hooks are installed automatically; they enforce this pro
 4. On first join, onboard yourself: search_context for the channel overview, get_messages for recent traffic.
 5. Answer only about this folder and folders you were granted. No emoji in message bodies.
 
-Knowledge transfer: when asked to hand knowledge to another agent, or when onboarding one, write the content to the channel context store with update_context (one entry per topic, titled clearly) and send a message mentioning the recipient with a one-line summary plus the entry titles. Do not paste long content into chat messages. When you RECEIVE a transfer, read the entries, merge what you need into your own notes or plans, and reply confirming what you stored and what you will do next: the sender's human is waiting for that confirmation."
+Knowledge transfer: when asked to hand knowledge to another agent, or when onboarding one, write the content to the channel context store with update_context (one entry per topic, titled clearly) and send a message mentioning the recipient with a one-line summary plus the entry titles. Do not paste long content into chat messages. When you RECEIVE a transfer, read the entries, merge what you need into your own notes or plans, and reply confirming what you stored and what you will do next: the sender's human is waiting for that confirmation. After sending an urgent or mentioned task, check delivery_state; if the recipient stays behind and offline and no reply comes, tell your human instead of resending."
         );
     }
 
@@ -95,7 +95,7 @@ You are on Cursor. Do NOT run `ah wait` in the background: Cursor never re-reads
 4. On first join, onboard yourself: search_context for the channel overview, get_messages for recent traffic.
 5. Answer only about this folder and folders you were granted. No emoji in message bodies.
 
-Knowledge transfer: when asked to hand knowledge to another agent, or when onboarding one, write the content to the channel context store with update_context (one entry per topic, titled clearly) and send a message mentioning the recipient with a one-line summary plus the entry titles. Do not paste long content into chat messages. When you RECEIVE a transfer, read the entries, merge what you need into your own notes or plans, and reply confirming what you stored and what you will do next: the sender's human is waiting for that confirmation."
+Knowledge transfer: when asked to hand knowledge to another agent, or when onboarding one, write the content to the channel context store with update_context (one entry per topic, titled clearly) and send a message mentioning the recipient with a one-line summary plus the entry titles. Do not paste long content into chat messages. When you RECEIVE a transfer, read the entries, merge what you need into your own notes or plans, and reply confirming what you stored and what you will do next: the sender's human is waiting for that confirmation. After sending an urgent or mentioned task, check delivery_state; if the recipient stays behind and offline and no reply comes, tell your human instead of resending."
         );
     }
 
@@ -112,7 +112,7 @@ Your harness was not detected (set --name if you are on Codex).
 4. On first join, onboard yourself: search_context for the channel overview, get_messages for recent traffic.
 5. Answer only about this folder and folders you were granted. No emoji in message bodies.
 
-Knowledge transfer: when asked to hand knowledge to another agent, or when onboarding one, write the content to the channel context store with update_context (one entry per topic, titled clearly) and send a message mentioning the recipient with a one-line summary plus the entry titles. Do not paste long content into chat messages. When you RECEIVE a transfer, read the entries, merge what you need into your own notes or plans, and reply confirming what you stored and what you will do next: the sender's human is waiting for that confirmation."
+Knowledge transfer: when asked to hand knowledge to another agent, or when onboarding one, write the content to the channel context store with update_context (one entry per topic, titled clearly) and send a message mentioning the recipient with a one-line summary plus the entry titles. Do not paste long content into chat messages. When you RECEIVE a transfer, read the entries, merge what you need into your own notes or plans, and reply confirming what you stored and what you will do next: the sender's human is waiting for that confirmation. After sending an urgent or mentioned task, check delivery_state; if the recipient stays behind and offline and no reply comes, tell your human instead of resending."
         );
     }
 }

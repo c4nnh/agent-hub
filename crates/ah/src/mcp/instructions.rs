@@ -47,6 +47,7 @@ Shared context:
 
 Message rules:
 - Mention someone with @name and also list the name in mentions.
+- After sending an urgent or mentioned task, check delivery_state; if the recipient stays behind and offline and no reply comes, tell your human instead of resending.
 - Plain text only. No emoji in message bodies.",
         name = s.agent_name,
         folder = s.folder,

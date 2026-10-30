@@ -3,7 +3,10 @@
 use super::{Session, UNBOUND, instructions};
 use crate::{
     client::ClientError,
-    commands::chat::{announce_line, fetch_since},
+    commands::{
+        channel::format_delivery,
+        chat::{announce_line, fetch_since},
+    },
 };
 use ah_common::{ChannelSummary, Message, PostMessage, SenderType, UpsertContext};
 use rmcp::{
@@ -262,6 +265,20 @@ impl AgentHub {
             let ch = self.channel(&args.0.channel)?;
             let got = self.session.client.list_agents(ch.id).await;
             json(&got.map_err(hub_error)?)
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Delivery state of a channel: the latest message id and, per agent, how far \
+                       its client has received messages and whether it is online. An agent marked \
+                       behind has not received the latest messages yet."
+    )]
+    async fn delivery_state(&self, args: Parameters<ChannelArgs>) -> CallToolResult {
+        self.run(async {
+            let ch = self.channel(&args.0.channel)?;
+            let got = self.session.client.delivery(ch.id).await;
+            Ok(format_delivery(&ch.name, &got.map_err(hub_error)?))
         })
         .await
     }

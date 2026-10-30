@@ -250,6 +250,10 @@ pub async fn run_wait(
     }
     out.flush()?;
     Cursors::advance(dir, &waiter.folder, &waiter.cursors)?;
+    // Delivery is done; the hub learns of it best-effort and the exit code does not depend on it.
+    client
+        .report_agent_cursors(&waiter.agent_name, &waiter.cursors)
+        .await;
     Ok(())
 }
 
