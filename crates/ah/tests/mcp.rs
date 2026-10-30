@@ -578,7 +578,7 @@ async fn delivery_state_lists_agents_and_marks_behind(pool: PgPool) {
     let want = format!(
         "#team latest message id {latest}\n\
          {AGENT}: read up to {latest} of {latest}, online\n\
-         ghost@away: read up to {first} of {latest}, offline, behind"
+         ghost@away: read up to {first} of {latest}, offline, behind, unreachable while idle"
     );
     let mut got = String::new();
     for _ in 0..100 {

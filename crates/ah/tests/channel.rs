@@ -663,8 +663,8 @@ async fn status_prints_delivery_per_bound_channel(pool: PgPool) {
         text(out),
         format!(
             "#team latest message id {latest}\n\
-             caught-up: read up to {latest} of {latest}, offline\n\
-             laggard: read up to {} of {latest}, offline, behind\n",
+             caught-up: read up to {latest} of {latest}, offline, unreachable while idle\n\
+             laggard: read up to {} of {latest}, offline, behind, unreachable while idle\n",
             latest - 1
         )
     );
@@ -679,4 +679,32 @@ async fn status_prints_delivery_per_bound_channel(pool: PgPool) {
     )
     .await;
     assert!(refused.is_err());
+}
+
+#[test]
+fn delivery_lines_name_coverage_for_offline_agents_only() {
+    let agent = |name: &str, online, covered| ah_common::AgentDelivery {
+        agent_name: name.into(),
+        last_read_id: 5,
+        updated_at: None,
+        online,
+        covered,
+    };
+    let state = ah_common::DeliveryState {
+        last_message_id: 5,
+        agents: vec![
+            agent("a", true, false),
+            agent("b", true, true),
+            agent("c", false, true),
+            agent("d", false, false),
+        ],
+    };
+    assert_eq!(
+        ah::commands::channel::format_delivery("t", &state),
+        "#t latest message id 5\n\
+         a: read up to 5 of 5, online\n\
+         b: read up to 5 of 5, online\n\
+         c: read up to 5 of 5, offline, covered\n\
+         d: read up to 5 of 5, offline, unreachable while idle"
+    );
 }

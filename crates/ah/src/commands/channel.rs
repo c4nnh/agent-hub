@@ -98,7 +98,7 @@ pub async fn run_join(
     if !has_wake {
         writeln!(
             out,
-            "optional: ah channel wake --harness <h> + ah daemon wakes this agent when messages arrive"
+            "while no session is open and no wake command is set, this agent is unreachable; messages wait until the next turn or listener. (ah channel wake --harness <h> or --notify, plus ah daemon, wakes or alerts when messages arrive)"
         )?;
     }
     let agents = client.list_agents(ch.id).await?;
@@ -333,6 +333,8 @@ pub struct WakeArgs {
     pub harness: Option<String>,
     pub command: Option<String>,
     pub off: bool,
+    /// Same as `command: Some("notify")`.
+    pub notify: bool,
 }
 
 /// Sets, clears or prints the wake command of a bound folder (`--folder`, else `cwd`).
@@ -346,7 +348,12 @@ pub fn run_wake(dir: &Path, cwd: &Path, args: WakeArgs, out: &mut impl Write) ->
     if args.command.as_deref().is_some_and(|c| c.trim().is_empty()) {
         return Err("--command must not be empty".into());
     }
-    let new = match (&args.harness, &args.command, args.off) {
+    let command = if args.notify {
+        Some(super::daemon::NOTIFY.to_string())
+    } else {
+        args.command.clone()
+    };
+    let new = match (&args.harness, &command, args.off) {
         (Some(h), None, false) => {
             let t = harness_template(h).ok_or_else(|| format!("unknown harness '{h}'"))?;
             Some(Some(t.to_string()))
@@ -384,8 +391,13 @@ pub fn format_delivery(channel: &str, state: &DeliveryState) -> String {
         } else {
             ""
         };
+        let coverage = match (a.online, a.covered) {
+            (true, _) => "",
+            (false, true) => ", covered",
+            (false, false) => ", unreachable while idle",
+        };
         text.push_str(&format!(
-            "\n{}: read up to {} of {}, {presence}{behind}",
+            "\n{}: read up to {} of {}, {presence}{behind}{coverage}",
             a.agent_name, a.last_read_id, state.last_message_id
         ));
     }
