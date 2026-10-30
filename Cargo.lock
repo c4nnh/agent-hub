@@ -10,7 +10,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "ah"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "ah-common",
  "ah-hub",
@@ -41,7 +41,7 @@ dependencies = [
 
 [[package]]
 name = "ah-common"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "chrono",
  "serde",
@@ -51,7 +51,7 @@ dependencies = [
 
 [[package]]
 name = "ah-hub"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "ah-common",
  "axum",
@@ -2202,7 +2202,7 @@ dependencies = [
 
 [[package]]
 name = "noop_proc_macro"
-version = "0.3.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0676bb32a98c1a483ce53e500a81ad9c3d5b3f7c920c28c24e9cb0980d0b5bc8"
 
