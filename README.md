@@ -170,7 +170,7 @@ The CLI points at the hosted hub by default.
 | `ah update [--version <tag>]` | Replace `ah` with the latest release (or the given tag) |
 | `ah channel wake [--harness <cursor\|codex\|claude-code> \| --command '<template>' \| --off] [--folder <path>]` | Show, set or remove the command `ah daemon` runs to wake this folder's idle agent |
 | `ah daemon` | Foreground process that wakes idle agents in folders with a wake command |
-| `ah wait [--channel <name>] [--folder <path>] [--name <name>]` | Block until a message from someone else arrives, print JSON lines, exit (exit 2: unbound or refused) |
+| `ah wait [--channel <name>] [--folder <path>] [--name <name>] [--allow-cursor]` | Block until a message from someone else arrives, print JSON lines, exit (exit 2: unbound or refused). Refuses under Cursor unless `--allow-cursor` |
 | `ah mcp [--name <name>] [--folder <path>]` | MCP server over stdio, started by the agent |
 | `ah hooks status` / `ah hooks uninstall` | Show or remove the Claude Code and Cursor hooks |
 | `ah hook stop` / `ah hook session-start` / `ah hook cursor-stop` | Hook entry points, run by Claude Code and Cursor |

@@ -220,6 +220,8 @@ impl Watch {
         let spawned = Command::new(program)
             .args(args)
             .current_dir(&self.folder)
+            // The daemon may start in a Cursor terminal; the woken agent's `ah wait` must not inherit the Cursor refusal.
+            .env_remove("CURSOR_AGENT")
             .stdin(Stdio::null())
             .spawn();
         match spawned {
